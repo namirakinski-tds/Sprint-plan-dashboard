@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Planning Board Generator</title>
+<style>
+  :root {
+    --bg: #f5f7fb;
+    --card: #ffffff;
+    --text: #111827;
+    --muted: #6b7280;
+    --line: #e5e7eb;
+    --shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+    --radius: 18px;
+    --sticky-left: 260px;
+    --day-width: 150px;
+    --lane-height: 58px;
+    --header-height: 70px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(circle at top left, #e8f0ff 0, transparent 28%),
+      radial-gradient(circle at top right, #fef3c7 0, transparent 24%),
+      var(--bg);
+  }
+  .page { max-width: 1900px; margin: 0 auto; padding: 24px; }
+  .hero h1 { margin: 0 0 8px 0; font-size: 30px; line-height: 1.1; }
+  .hero p { margin: 0; color: var(--muted); font-size: 14px; }
+  .stats { display: flex; gap: 12px; flex-wrap: wrap; margin: 16px 0 18px 0; }
+  .stat {
+    background: rgba(255,255,255,0.86);
+    border: 1px solid rgba(255,255,255,0.7);
+    box-shadow: var(--shadow);
+    border-radius: 14px;
+    padding: 12px 14px;
+    min-width: 130px;
+  }
+  .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
+  .stat .v { font-size: 24px; font-weight: 700; }
+  .shell { display: grid; grid-template-columns: 380px 1fr; gap: 18px; align-items: start; }
+  .panel, .board-card {
+    background: var(--card);
+    border: 1px solid rgba(17,24,39,.06);
+    box-shadow: var(--shadow);
+    border-radius: var(--radius);
+  }
+  .panel { padding: 16px; position: sticky; top: 16px; }
+  .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
+  .segmented { display: inline-flex; width: 100%; background: #f3f4f6; padding: 4px; border-radius: 12px; gap: 4px; }
+  .segmented button {
+    flex: 1; height: 40px; border: 0; background: transparent; border-radius: 10px; font-weight: 700; cursor: pointer; color: #374151;
+  }
+  .segmented button.active { background: white; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .field { margin-top: 16px; }
+  .field label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .search, .upload {
+    width: 100%; height: 42px; border: 1px solid var(--line); border-radius: 10px; padding: 0 12px; outline: none; background: white;
+  }
+  .listbox { margin-top: 8px; max-height: 180px; overflow: auto; border: 1px solid var(--line); background: #fafafa; border-radius: 12px; padding: 8px; }
+  .option { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; cursor: pointer; }
+  .option:hover { background: #eef2ff; }
+  .option input { width: 16px; height: 16px; }
+  .swatch { width: 11px; height: 11px; border-radius: 999px; flex: 0 0 11px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  button.action { border: 0; border-radius: 10px; height: 38px; padding: 0 12px; cursor: pointer; font-weight: 700; font-size: 13px; }
+  .dark { background: #111827; color: white; }
+  .light { background: #eef2f7; color: #374151; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; background: #fafafa; margin-top: 10px; gap: 12px; }
+  .toggle input { width: 18px; height: 18px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .chip { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 7px 10px; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+  .board-card { padding: 12px; overflow: hidden; }
+  .board-wrap {
+    overflow: auto;
+    max-height: calc(100vh - 120px);
+    border-radius: 14px;
+    border: 1px solid var(--line);
+    background: white;
+  }
+  .board-inner { min-width: max-content; }
+  .header-row {
+    position: sticky;
+    top: 0;
+    z-index: 30;
+    display: flex;
+    background: #f8fafc;
+    border-bottom: 1px solid var(--line);
+  }
+  .header-left {
+    position: sticky;
+    left: 0;
+    z-index: 35;
+    width: var(--sticky-left);
+    min-width: var(--sticky-left);
+    max-width: var(--sticky-left);
+    background: #f8fafc;
+    box-shadow: 1px 0 0 var(--line);
+    padding: 14px 12px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+  }
+  .header-days {
+    display: flex;
+  }
+  .day-head {
+    width: var(--day-width);
+    min-width: var(--day-width);
+    max-width: var(--day-width);
+    padding: 10px 8px;
+    border-right: 1px solid var(--line);
+    text-align: center;
+    height: var(--header-height);
+  }
+  .day-num { font-size: 18px; font-weight: 800; line-height: 1; }
+  .day-sub { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; }
+  .board-row {
+    display: flex;
+    min-height: 74px;
+    border-bottom: 1px solid var(--line);
+  }
+  .row-label {
+    position: sticky;
+    left: 0;
+    z-index: 20;
+    width: var(--sticky-left);
+    min-width: var(--sticky-left);
+    max-width: var(--sticky-left);
+    background: white;
+    box-shadow: 1px 0 0 var(--line);
+    border-right: 1px solid var(--line);
+    padding: 12px;
+  }
+  .row-title { font-weight: 800; font-size: 14px; line-height: 1.25; }
+  .row-sub { font-size: 12px; color: var(--muted); margin-top: 5px; line-height: 1.25; }
+  .timeline {
+    position: relative;
+    background:
+      repeating-linear-gradient(
+        to right,
+        #fcfdff 0,
+        #fcfdff calc(var(--day-width) - 1px),
+        var(--line) calc(var(--day-width) - 1px),
+        var(--line) var(--day-width)
+      );
+  }
+  .empty-row {
+    color: #cbd5e1;
+    font-size: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 74px;
+  }
+  .task-bar {
+    position: absolute;
+    border-radius: 14px;
+    padding: 8px 10px;
+    color: white;
+    overflow: hidden;
+    box-shadow: 0 3px 8px rgba(15,23,42,.15);
+    border: 1px solid rgba(255,255,255,.32);
+  }
+  .task-title {
+    font-size: 12px;
+    font-weight: 800;
+    line-height: 1.25;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .task-sub {
+    font-size: 11px;
+    line-height: 1.2;
+    opacity: .92;
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .legend-note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .empty-state { padding: 40px; text-align: center; color: var(--muted); font-size: 14px; }
+  @media (max-width: 1200px) {
+    .shell { grid-template-columns: 1fr; }
+    .panel { position: static; }
+    .board-wrap { max-height: none; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="hero">
+    <h1>Planning board generator</h1>
+    <p>Upload a CSV, switch between Assignee or Epic rows, and review a cleaner sticky daily board with spanning task bars.</p>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Tasks</div><div class="v" id="statTasks">0</div></div>
+    <div class="stat"><div class="k">Departments</div><div class="v" id="statDepts">0</div></div>
+    <div class="stat"><div class="k">Epics</div><div class="v" id="statEpics">0</div></div>
+    <div class="stat"><div class="k">Assignees</div><div class="v" id="statAssignees">0</div></div>
+  </div>
+
+  <div class="shell">
+    <div class="panel">
+      <div class="section-title">CSV input</div>
+      <input id="csvFile" class="upload" type="file" accept=".csv" />
+      <div class="legend-note">The page opens with your current CSV preloaded. Uploading a new CSV replaces the board instantly.</div>
+
+      <div class="field">
+        <div class="section-title">Main view</div>
+        <div class="segmented">
+          <button id="viewAssignee" class="active">Assignee rows</button>
+          <button id="viewEpic">Epic rows</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="deptSearch">Department</label>
+        <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
+        <div class="row">
+          <button class="action light" id="deptAll">Select all</button>
+          <button class="action light" id="deptClear">Clear</button>
+        </div>
+        <div id="deptList" class="listbox"></div>
+      </div>
+
+      <div class="field">
+        <label for="epicSearch">Epic</label>
+        <input id="epicSearch" class="search" type="text" placeholder="Search epics..." />
+        <div class="row">
+          <button class="action light" id="epicAll">Select all</button>
+          <button class="action light" id="epicClear">Clear</button>
+        </div>
+        <div id="epicList" class="listbox"></div>
+      </div>
+
+      <div class="field">
+        <label for="assigneeSearch">Assignee</label>
+        <input id="assigneeSearch" class="search" type="text" placeholder="Search assignees..." />
+        <div class="row">
+          <button class="action light" id="assigneeAll">Select all</button>
+          <button class="action light" id="assigneeClear">Clear</button>
+        </div>
+        <div id="assigneeList" class="listbox"></div>
+      </div>
+
+      <div class="field">
+        <div class="section-title">Display</div>
+        <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
+      </div>
+
+      <div class="row">
+        <button class="action light" id="resetBtn">Reset all</button>
+      </div>
+
+      <div id="activeChips" class="chips"></div>
+    </div>
+
+    <div class="board-card">
+      <div id="board" class="board-wrap"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const defaultRecords = [{"department": "Client Dev", "epic": "First Playable", "task": "(1st P) Tech Review", "assignee": "Adit", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "Client Dev", "epic": "First Playable", "task": "Build X", "assignee": "Adit", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "M0", "task": "Build 2.0.6", "assignee": "Adit", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Client Dev", "epic": "Misc", "task": "Client Dev & Server Integration Plan Discussion", "assignee": "Adit", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Client Dev", "epic": "Shield", "task": "(1st P) Previz Breakdown\u00a0- Shield", "assignee": "Adit", "start": "2026-04-22", "end": "2026-04-22"}, {"department": "Client Dev", "epic": "Shield", "task": "(1st P) Tech Review - Shield", "assignee": "Adit", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "Spinwheel & Avatar Sync", "task": "(1st P) Tech Review - Spinwheel & Avatar Sync", "assignee": "Adit", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "Trap Tile", "task": "M1 Tech Review - Trap Tile", "assignee": "Adit", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "UI", "epic": "Quest Content", "task": "Quest information panel artwork + quest unlock icon for Tier increase: Game of Life", "assignee": "Akhsani", "start": "2026-04-20", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "Animation and  Movement", "task": "(1st P) avatar position and angle (5d) - Review", "assignee": "Aldi", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Tech Art", "epic": "Attack", "task": "(M1) Attack Gameplay", "assignee": "Aldi", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "Tech Art", "epic": "Attack", "task": "(M1) Attack Result", "assignee": "Aldi", "start": "2026-04-20", "end": "2026-04-22"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) Tile Movement Animation - Auto (6c)", "assignee": "Aldi", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Game Server", "epic": "Core Loop", "task": "PR Review Core Loop - Force Next Board Config", "assignee": "Alexey", "start": "2026-04-21", "end": "2026-04-24"}, {"department": "Game Server", "epic": "Core Loop", "task": "PR Review Core Loop - Product Feedback", "assignee": "Alexey", "start": "2026-04-22", "end": "2026-04-22"}, {"department": "Game Server", "epic": "JSON Config", "task": "PR Review Clean Up Enum", "assignee": "Alexey", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "QA", "epic": "M0", "task": "Prep M0 Testing", "assignee": "Aul", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "QA", "epic": "M0", "task": "M0 Testing - Build 2.0.6", "assignee": "Aul", "start": "2026-04-20", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "First Playable", "task": "Reload entity reward", "assignee": "Dady", "start": "2026-04-17", "end": "2026-04-20"}, {"department": "Client Dev", "epic": "First Playable", "task": "Piano Tile: Hook tile animation with tile event", "assignee": "Dady", "start": "2026-04-21", "end": "2026-04-22"}, {"department": "Client Dev", "epic": "First Playable", "task": "Expose tile direction information", "assignee": "Dady", "start": "2026-04-23", "end": "2026-04-28"}, {"department": "Client Dev", "epic": "Quest Element", "task": "Bug Fixing", "assignee": "Dani", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Client Dev", "epic": "Quest Element", "task": "M1 Previz Breakdown\u00a0- Quest Element - QE 1, 2, 3, 4, 5, 6, 10, 16\u2028\nSpin QE 1, 5, 7", "assignee": "Dani", "start": "2026-04-20", "end": "2026-04-21"}, {"department": "Client Dev", "epic": "Quest Element", "task": "Quest Element #6 - Collect Cash Reward", "assignee": "Dani", "start": "2026-04-22", "end": "2026-04-28"}, {"department": "Tech Art", "epic": "Animation and  Movement", "task": "(1st P) avatar position (5d) - Review", "assignee": "Dimas", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) Movement Camera - Easing, Dampen (2c)", "assignee": "Dimas", "start": "2026-04-22", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) speed of movement (3a)", "assignee": "Dimas", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) Spinwheel - Iteration (1a, 1b, 1c, 1d)", "assignee": "Dimas", "start": "2026-04-17", "end": "2026-04-20"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) Spinwheel - 2nd Review (1a, 1b, 1c, 1d)", "assignee": "Dimas", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "Client Dev", "epic": "First Playable", "task": "Cash HUD Counter", "assignee": "Edo", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Client Dev", "epic": "M0", "task": "M0 Bug Fixing", "assignee": "Edo", "start": "2026-04-20", "end": "2026-04-21"}, {"department": "Client Dev", "epic": "M1", "task": "M1 Task Analysis (Dependency & Assignee)", "assignee": "Edo", "start": "2026-04-22", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "First Playable", "task": "Delayed Camera Movement", "assignee": "Edwin", "start": "2026-04-17", "end": "2026-04-21"}, {"department": "Client Dev", "epic": "First Playable", "task": "Bug Fixing", "assignee": "Edwin", "start": "2026-04-22", "end": "2026-04-23"}, {"department": "UX", "epic": "Pop-O-Matic", "task": "Dice roll & Avatar Movement Sync", "assignee": "Eko", "start": "2026-04-21", "end": "2026-04-24"}, {"department": "Client Dev", "epic": "First Playable", "task": "Quest HUD Counter", "assignee": "Geizka", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Client Dev", "epic": "First Playable", "task": "Update shield into stack", "assignee": "Geizka", "start": "2026-04-20", "end": "2026-04-21"}, {"department": "Client Dev", "epic": "First Playable", "task": "Bug Fixing", "assignee": "Geizka", "start": "2026-04-22", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "Shield", "task": "M1 Tech Review - Shield", "assignee": "Geizka", "start": "2026-04-22", "end": "2026-04-22"}, {"department": "Client Dev", "epic": "Trap Tile", "task": "M1 Tech Review - Trap Tile", "assignee": "Geizka", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "Zone Upgrade/Tile Upgrade", "task": "(1st P) Zone Upgrade UI & Disable Zone Upgrade Button", "assignee": "Glinna", "start": "2026-04-20", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "Board Transition", "task": "(M1) Refuel UI Update - Sequence", "assignee": "Glinna", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Game Server", "epic": "Core Loop", "task": "Core Loop - Force Next Board Config - QA Feedback", "assignee": "Ihsan", "start": "2026-04-20", "end": "2026-04-23"}, {"department": "Game Server", "epic": "Core Loop", "task": "Force Next Board PR Review Accommodation", "assignee": "Ihsan", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Game Server", "epic": "Core Loop", "task": "Product Review - Core Loop Config - Feedback Accommodation", "assignee": "Ihsan", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Game Server", "epic": "Core Loop", "task": "Force Next Board QA Feedback Accommodation", "assignee": "Ihsan", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Game Server", "epic": "JSON Config", "task": "Clean Up Enum", "assignee": "Ihsan", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "QA", "epic": "M0", "task": "Prep M0 Testing", "assignee": "Imsa", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "QA", "epic": "M0", "task": "M0 Testing - Build 2.0.6", "assignee": "Imsa", "start": "2026-04-20", "end": "2026-04-22"}, {"department": "QA", "epic": "M0", "task": "M0 Performance Testing - Build 2.0.6", "assignee": "Imsa", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "Quest Element", "task": "M1 Previz Breakdown\u00a0- Quest Element - QE 1, 2, 3, 4, 5, 6, 10, 16\u2028\nSpin QE 1, 5, 7", "assignee": "Inge", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "Tech Art", "epic": "Shield", "task": "M1 Previz Breakdown\u00a0- Shield", "assignee": "Inge", "start": "2026-04-22", "end": "2026-04-22"}, {"department": "Tech Art", "epic": "Shield", "task": "M1 Tech Review - Shield", "assignee": "Inge", "start": "2026-04-22", "end": "2026-04-22"}, {"department": "Tech Art", "epic": "Spinwheel & Avatar Sync", "task": "M1 Tech Review - Spinwheel & Avatar Sync", "assignee": "Inge", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Tech Art", "epic": "Trap Tile", "task": "M1 Previz Breakdown\u00a0- Trap Tile", "assignee": "Inge", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "First Playable", "task": "(1st P) Add decimal formatter", "assignee": "Jervis", "start": "2026-04-17", "end": "2026-04-20"}, {"department": "Client Dev", "epic": "HUD", "task": "Zone Upgrade & Tier Increase HUD Counter", "assignee": "Jervis", "start": "2026-04-21", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "Zone Upgrade/Tile Upgrade", "task": "(1st p) Assist Ricky on Zone Upgrade", "assignee": "Julian", "start": "2026-04-17", "end": "2026-04-23"}, {"department": "Game Server", "epic": "Core Loop", "task": "Product Review - Core Loop Config", "assignee": "Kevin", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "UI", "epic": "Quest Content", "task": "Quest information panel artwork + quest unlock icon for Tier increase: Mouse Trap", "assignee": "Lukman", "start": "2026-04-21", "end": "2026-04-24"}, {"department": "QA", "epic": "M0", "task": "M0 Testing - Build 2.0.6", "assignee": "Maizan", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "QA", "epic": "PTO", "task": "PTO", "assignee": "Maizan", "start": "2026-04-17", "end": "2026-04-22"}, {"department": "Previz", "epic": "Potato Perks", "task": "Perk Unlock Animation", "assignee": "Nicholas", "start": "2026-04-22", "end": "2026-04-27"}, {"department": "Previz", "epic": "Tile Mechanic: Payday", "task": "Update Payday Streak sequence", "assignee": "Nicholas", "start": "2026-04-17", "end": "2026-04-21"}, {"department": "Game Server", "epic": "Core Loop", "task": "Testing Core Loop - Force Next Board", "assignee": "Nika", "start": "2026-04-17", "end": "2026-04-22"}, {"department": "Game Server", "epic": "JSON Config", "task": "Testing JSON Config Clean Up Enum", "assignee": "Nika", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Previz", "epic": "Pop-O-Matic", "task": "Update cash tile Sequence", "assignee": "Nono", "start": "2026-04-17", "end": "2026-04-21"}, {"department": "Previz", "epic": "Tile Mechanic: Giftbox", "task": "Multiple Rewards previz", "assignee": "Nono", "start": "2026-04-22", "end": "2026-04-27"}, {"department": "Tech Art", "epic": "Tile Sequence", "task": "(1st P) Tile Mechanic: Payday Single, Giftbox, Penalty, Shield (7a, 7b, 7d, 7g)", "assignee": "Peter", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Tech Art", "epic": "UI Framework", "task": "(M1) Generic Quest Element 2, 3, 4", "assignee": "Peter", "start": "2026-04-20", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) Review (4a, 4b, 4c)", "assignee": "Phoebe", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) Iteration (4a, 4b, 4c)", "assignee": "Phoebe", "start": "2026-04-20", "end": "2026-04-21"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) 2nd Review (4a, 4b, 4c)", "assignee": "Phoebe", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) 2nd Iteration (4a, 4b, 4c)", "assignee": "Phoebe", "start": "2026-04-22", "end": "2026-04-23"}, {"department": "Tech Art", "epic": "First Playable", "task": "(1st P) 3rd Review (4a, 4b, 4c)", "assignee": "Phoebe", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "First Playable", "task": "(1st P) Steal Transition", "assignee": "Priangga", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Client Dev", "epic": "HUD", "task": "POM HUD Counter", "assignee": "Priangga", "start": "2026-04-20", "end": "2026-04-23"}, {"department": "Client Dev", "epic": "First Playable", "task": "Resolve Adits review for Tier Upgrade", "assignee": "Ricky", "start": "2026-04-17", "end": "2026-04-17"}, {"department": "Client Dev", "epic": "First Playable", "task": "Review Refuel Mechanic PR", "assignee": "Ricky", "start": "2026-04-17", "end": "2026-04-20"}, {"department": "Client Dev", "epic": "First Playable", "task": "Cash reward particle", "assignee": "Ricky", "start": "2026-04-21", "end": "2026-04-22"}, {"department": "Client Dev", "epic": "First Playable", "task": "Zone Upgrade - XP Reward", "assignee": "Ricky", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "BA", "epic": "Action Card", "task": "Update FDD Action Card", "assignee": "Tania", "start": "2026-04-17", "end": "2026-04-20"}, {"department": "BA", "epic": "Basic Tutorial", "task": "Update FDD Basic Tutorial", "assignee": "Tania", "start": "2026-04-21", "end": "2026-04-23"}, {"department": "BA", "epic": "Shield", "task": "M1 Tech Review - Shield", "assignee": "Tania", "start": "2026-04-22", "end": "2026-04-22"}, {"department": "BA", "epic": "Spinwheel & Avatar Sync", "task": "M1 Tech Review - Spinwheel & Avatar Sync", "assignee": "Tania", "start": "2026-04-21", "end": "2026-04-21"}, {"department": "BA", "epic": "Trap Tile", "task": "M1 Tech Review - Trap Tile", "assignee": "Tania", "start": "2026-04-23", "end": "2026-04-23"}, {"department": "UX", "epic": "Meetings", "task": "Hippo Island UX Review", "assignee": "Thedi", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "UX", "epic": "Spinwheel & Avatar Sync", "task": "Spinwheel & Avatar Sync Kickoff", "assignee": "Thedi", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "UX", "epic": "Trap Tile", "task": "Trap Tile UX Review", "assignee": "Thedi", "start": "2026-04-20", "end": "2026-04-20"}, {"department": "UX", "epic": "Zone Upgrade/Tile Upgrade", "task": "Tier Increase Update - Swap Quest Unlock & New Branch\nAdd Quest upgrade flow", "assignee": "Thedi", "start": "2026-04-21", "end": "2026-04-24"}];
+
+const palette = [
+  "#2563eb", "#0ea5e9", "#14b8a6", "#22c55e", "#84cc16",
+  "#eab308", "#f59e0b", "#f97316", "#ef4444", "#ec4899",
+  "#a855f7", "#8b5cf6", "#64748b", "#0891b2", "#10b981"
+];
+
+const state = {
+  rowMode: "assignee",
+  selectedDepartments: new Set(),
+  selectedEpics: new Set(),
+  selectedAssignees: new Set(),
+  hideEmpty: true,
+  records: []
+};
+
+const deptSearch = document.getElementById("deptSearch");
+const epicSearch = document.getElementById("epicSearch");
+const assigneeSearch = document.getElementById("assigneeSearch");
+const deptList = document.getElementById("deptList");
+const epicList = document.getElementById("epicList");
+const assigneeList = document.getElementById("assigneeList");
+const activeChips = document.getElementById("activeChips");
+const board = document.getElementById("board");
+const csvFile = document.getElementById("csvFile");
+
+function escapeHtml(v) {
+  return String(v)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
+function parseCsvLine(line) {
+  const result = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (ch === '"') {
+      if (inQuotes && next === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === "," && !inQuotes) {
+      result.push(current);
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  result.push(current);
+  return result;
+}
+
+function parseCsvText(text) {
+  const lines = text.replace(/\r/g, "").split("\n").filter(line => line.length > 0);
+  if (lines.length < 4) return [];
+
+  const header = parseCsvLine(lines[2]);
+  const colIndex = {};
+  header.forEach((h, i) => { colIndex[h] = i; });
+
+  const deptIdx = colIndex["Department"];
+  const epicIdx = colIndex["Epic"];
+  const taskIdx = colIndex["Task Summary"];
+  const assigneeIdx = colIndex["Assignee\n(use email)"];
+  const startIdx = colIndex["Start"];
+  const endIdx = colIndex["End"];
+
+  if ([deptIdx, epicIdx, taskIdx, assigneeIdx, startIdx, endIdx].some(v => v === undefined)) {
+    return [];
+  }
+
+  const out = [];
+  for (let i = 3; i < lines.length; i++) {
+    const row = parseCsvLine(lines[i]);
+    const department = (row[deptIdx] || "").trim();
+    const epic = (row[epicIdx] || "").trim();
+    const task = (row[taskIdx] || "").trim();
+    const assignee = (row[assigneeIdx] || "").trim();
+    const start = parseDate(row[startIdx] || "");
+    const end = parseDate(row[endIdx] || "");
+    if (!department || !epic || !task || !assignee || !start || !end) continue;
+
+    out.push({
+      department,
+      epic,
+      task,
+      assignee,
+      start,
+      end
+    });
+  }
+  return out;
+}
+
+function parseDate(value) {
+  const s = String(value).trim();
+  const m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+  if (!m) return null;
+  const months = {Jan:"01",Feb:"02",Mar:"03",Apr:"04",May:"05",Jun:"06",Jul:"07",Aug:"08",Sep:"09",Oct:"10",Nov:"11",Dec:"12"};
+  const dd = m[1].padStart(2, "0");
+  const mm = months[m[2]];
+  const yy = "20" + m[3];
+  if (!mm) return null;
+  return yy + "-" + mm + "-" + dd;
+}
+
+function dateRangeBusiness(startStr, endStr) {
+  const out = [];
+  const d = new Date(startStr + "T00:00:00");
+  const end = new Date(endStr + "T00:00:00");
+  while (d <= end) {
+    const day = d.getDay();
+    if (day !== 0 && day !== 6) {
+      out.push(d.toISOString().slice(0, 10));
+    }
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+function enrichRecords(records) {
+  return records.map(r => ({
+    ...r,
+    days: dateRangeBusiness(r.start, r.end)
+  }));
+}
+
+function getDepartments() {
+  return Array.from(new Set(state.records.map(r => r.department))).sort();
+}
+function getEpics() {
+  return Array.from(new Set(state.records.map(r => r.epic))).sort();
+}
+function getAssignees() {
+  return Array.from(new Set(state.records.map(r => r.assignee))).sort();
+}
+function getColorMap() {
+  const departments = getDepartments();
+  const map = {};
+  departments.forEach((d, i) => { map[d] = palette[i % palette.length]; });
+  return map;
+}
+function getDateCols() {
+  if (state.records.length === 0) return [];
+  let min = state.records[0].start;
+  let max = state.records[0].end;
+  state.records.forEach(r => {
+    if (r.start < min) min = r.start;
+    if (r.end > max) max = r.end;
+  });
+  return dateRangeBusiness(min, max);
+}
+
+function updateStats(filtered) {
+  document.getElementById("statTasks").textContent = filtered.length.toLocaleString();
+  document.getElementById("statDepts").textContent = new Set(filtered.map(r => r.department)).size.toLocaleString();
+  document.getElementById("statEpics").textContent = new Set(filtered.map(r => r.epic)).size.toLocaleString();
+  document.getElementById("statAssignees").textContent = new Set(filtered.map(r => r.assignee)).size.toLocaleString();
+}
+
+function addOptions(container, values, selectedSet, showColor) {
+  const colorMap = getColorMap();
+  container.innerHTML = "";
+  values.forEach(v => {
+    const label = document.createElement("label");
+    label.className = "option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = selectedSet.has(v);
+    input.addEventListener("change", () => {
+      if (input.checked) selectedSet.add(v);
+      else selectedSet.delete(v);
+      renderAll();
+    });
+    label.appendChild(input);
+    if (showColor) {
+      const sw = document.createElement("span");
+      sw.className = "swatch";
+      sw.style.background = colorMap[v] || "#94a3b8";
+      label.appendChild(sw);
+    }
+    const txt = document.createElement("span");
+    txt.textContent = v;
+    label.appendChild(txt);
+    container.appendChild(label);
+  });
+}
+
+function renderOptions() {
+  const departments = getDepartments();
+  const epics = getEpics();
+  const assignees = getAssignees();
+
+  const dTerm = deptSearch.value.trim().toLowerCase();
+  const eTerm = epicSearch.value.trim().toLowerCase();
+  const aTerm = assigneeSearch.value.trim().toLowerCase();
+
+  addOptions(deptList, departments.filter(v => v.toLowerCase().includes(dTerm)), state.selectedDepartments, true);
+  addOptions(epicList, epics.filter(v => v.toLowerCase().includes(eTerm)), state.selectedEpics, false);
+  addOptions(assigneeList, assignees.filter(v => v.toLowerCase().includes(aTerm)), state.selectedAssignees, false);
+}
+
+function getFilteredRecords() {
+  return state.records.filter(r => {
+    const deptOk = state.selectedDepartments.size === 0 || state.selectedDepartments.has(r.department);
+    const epicOk = state.selectedEpics.size === 0 || state.selectedEpics.has(r.epic);
+    const assigneeOk = state.selectedAssignees.size === 0 || state.selectedAssignees.has(r.assignee);
+    return deptOk && epicOk && assigneeOk;
+  });
+}
+
+function renderChips() {
+  activeChips.innerHTML = "";
+  const mode = document.createElement("span");
+  mode.className = "chip";
+  mode.textContent = state.rowMode === "assignee" ? "Rows: Assignee" : "Rows: Epic";
+  activeChips.appendChild(mode);
+
+  if (!state.hideEmpty) {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "Showing empty rows";
+    activeChips.appendChild(chip);
+  }
+
+  [...state.selectedDepartments].sort().forEach(v => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "Dept: " + v;
+    activeChips.appendChild(chip);
+  });
+  [...state.selectedEpics].sort().forEach(v => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "Epic: " + v;
+    activeChips.appendChild(chip);
+  });
+  [...state.selectedAssignees].sort().forEach(v => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = "Assignee: " + v;
+    activeChips.appendChild(chip);
+  });
+}
+
+function dayHeader(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  const num = d.toLocaleDateString("en-GB", { day: "2-digit" });
+  const month = d.toLocaleDateString("en-GB", { month: "short" });
+  const weekday = d.toLocaleDateString("en-GB", { weekday: "short" });
+  return '<div class="day-num">' + num + '</div><div class="day-sub">' + weekday + ' • ' + month + '</div>';
+}
+
+function buildRows(filtered, dateCols) {
+  const rowMap = new Map();
+
+  filtered.forEach(r => {
+    const key = state.rowMode === "assignee" ? r.assignee : r.epic;
+    const sub = state.rowMode === "assignee" ? r.department : (r.department + " • " + r.assignee);
+    if (!rowMap.has(key)) rowMap.set(key, { name: key, sub, tasks: [] });
+    rowMap.get(key).tasks.push(r);
+  });
+
+  const rows = Array.from(rowMap.values()).map(row => {
+    row.tasks.sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end) || a.task.localeCompare(b.task));
+
+    const lanes = [];
+    row.tasks.forEach(task => {
+      const startIdx = dateCols.indexOf(task.days[0]);
+      const endIdx = dateCols.indexOf(task.days[task.days.length - 1]);
+      const spanStart = startIdx < 0 ? 0 : startIdx;
+      const spanEnd = endIdx < 0 ? spanStart : endIdx;
+
+      let lane = 0;
+      while (true) {
+        if (!lanes[lane]) {
+          lanes[lane] = [];
+          break;
+        }
+        const hasOverlap = lanes[lane].some(existing => !(spanEnd < existing.startIdx || spanStart > existing.endIdx));
+        if (!hasOverlap) break;
+        lane++;
+      }
+
+      const placed = { ...task, startIdx: spanStart, endIdx: spanEnd, lane };
+      lanes[lane].push(placed);
+      task._placed = placed;
+    });
+
+    row.laneCount = Math.max(1, lanes.length);
+    row.placedTasks = row.tasks.map(t => t._placed);
+
+    row.firstDay = row.placedTasks.length ? row.placedTasks[0].start : "9999-12-31";
+    return row;
+  });
+
+  rows.sort((a, b) => a.firstDay.localeCompare(b.firstDay) || a.name.localeCompare(b.name));
+
+  return state.hideEmpty ? rows.filter(r => r.placedTasks.length > 0) : rows;
+}
+
+function taskBarHtml(task, colorMap) {
+  const left = task.startIdx * 150;
+  const width = ((task.endIdx - task.startIdx + 1) * 150) - 8;
+  const top = 8 + (task.lane * 58);
+  const color = colorMap[task.department] || "#64748b";
+  const sub = state.rowMode === "assignee"
+    ? (escapeHtml(task.epic) + " • " + escapeHtml(task.start) + " to " + escapeHtml(task.end))
+    : (escapeHtml(task.assignee) + " • " + escapeHtml(task.start) + " to " + escapeHtml(task.end));
+
+  return '<div class="task-bar" style="left:' + left + 'px; width:' + width + 'px; top:' + top + 'px; background:' + color + ';" title="' +
+    escapeHtml(task.task + " | " + sub) + '">' +
+    '<div class="task-title">' + escapeHtml(task.task) + '</div>' +
+    '<div class="task-sub">' + sub + '</div>' +
+  '</div>';
+}
+
+function renderBoard() {
+  const filtered = getFilteredRecords();
+  const dateCols = getDateCols();
+  const colorMap = getColorMap();
+
+  updateStats(filtered);
+  renderChips();
+
+  if (filtered.length === 0 || dateCols.length === 0) {
+    board.innerHTML = '<div class="empty-state">No rows match the current filters.</div>';
+    return;
+  }
+
+  const rows = buildRows(filtered, dateCols);
+  const firstColTitle = state.rowMode === "assignee" ? "Assignee" : "Epic";
+
+  let html = '<div class="board-inner">';
+  html += '<div class="header-row">';
+  html += '<div class="header-left">' + firstColTitle + '</div>';
+  html += '<div class="header-days">';
+  dateCols.forEach(d => { html += '<div class="day-head">' + dayHeader(d) + '</div>'; });
+  html += '</div></div>';
+
+  rows.forEach(row => {
+    const rowHeight = Math.max(74, 8 + (row.laneCount * 58));
+    const timelineWidth = dateCols.length * 150;
+    html += '<div class="board-row">';
+    html += '<div class="row-label"><div class="row-title">' + escapeHtml(row.name) + '</div><div class="row-sub">' + escapeHtml(row.sub) + '</div></div>';
+    html += '<div class="timeline" style="width:' + timelineWidth + 'px; min-width:' + timelineWidth + 'px; height:' + rowHeight + 'px;">';
+    if (row.placedTasks.length === 0) {
+      html += '<div class="empty-row">·</div>';
+    } else {
+      row.placedTasks.forEach(task => { html += taskBarHtml(task, colorMap); });
+    }
+    html += '</div></div>';
+  });
+
+  html += '</div>';
+  board.innerHTML = html;
+}
+
+function renderAll() {
+  renderOptions();
+  renderBoard();
+}
+
+function setMode(mode) {
+  state.rowMode = mode;
+  document.getElementById("viewAssignee").classList.toggle("active", mode === "assignee");
+  document.getElementById("viewEpic").classList.toggle("active", mode === "epic");
+  renderBoard();
+}
+
+function resetAll() {
+  state.rowMode = "assignee";
+  state.selectedDepartments.clear();
+  state.selectedEpics.clear();
+  state.selectedAssignees.clear();
+  state.hideEmpty = true;
+  document.getElementById("toggleHideEmpty").checked = true;
+  deptSearch.value = "";
+  epicSearch.value = "";
+  assigneeSearch.value = "";
+  document.getElementById("viewAssignee").classList.add("active");
+  document.getElementById("viewEpic").classList.remove("active");
+  renderAll();
+}
+
+csvFile.addEventListener("change", async (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const text = await file.text();
+  const parsed = parseCsvText(text);
+  if (parsed.length === 0) {
+    alert("Could not parse this CSV. Please use the same export format as your sprint rehearsal file.");
+    return;
+  }
+  state.records = enrichRecords(parsed);
+  resetAll();
+});
+
+deptSearch.addEventListener("input", renderOptions);
+epicSearch.addEventListener("input", renderOptions);
+assigneeSearch.addEventListener("input", renderOptions);
+
+document.getElementById("deptAll").addEventListener("click", () => { getDepartments().forEach(v => state.selectedDepartments.add(v)); renderAll(); });
+document.getElementById("deptClear").addEventListener("click", () => { state.selectedDepartments.clear(); renderAll(); });
+document.getElementById("epicAll").addEventListener("click", () => { getEpics().forEach(v => state.selectedEpics.add(v)); renderAll(); });
+document.getElementById("epicClear").addEventListener("click", () => { state.selectedEpics.clear(); renderAll(); });
+document.getElementById("assigneeAll").addEventListener("click", () => { getAssignees().forEach(v => state.selectedAssignees.add(v)); renderAll(); });
+document.getElementById("assigneeClear").addEventListener("click", () => { state.selectedAssignees.clear(); renderAll(); });
+
+document.getElementById("toggleHideEmpty").addEventListener("change", e => {
+  state.hideEmpty = e.target.checked;
+  renderBoard();
+});
+
+document.getElementById("resetBtn").addEventListener("click", resetAll);
+document.getElementById("viewAssignee").addEventListener("click", () => setMode("assignee"));
+document.getElementById("viewEpic").addEventListener("click", () => setMode("epic"));
+
+state.records = enrichRecords(defaultRecords);
+resetAll();
+</script>
+</body>
+</html>
