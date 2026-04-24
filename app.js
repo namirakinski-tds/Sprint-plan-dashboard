@@ -27,7 +27,8 @@ const dragState = {
   startDate: null,
   endDate: null,
   originalAssignee: null,
-  pointerId: null
+  pointerId: null,
+  moved: false
 };
 
 const monthMap = {
@@ -47,7 +48,9 @@ const board = document.getElementById("board");
 const summary = document.getElementById("summary");
 const csvFile = document.getElementById("csvFile");
 const changeStatus = document.getElementById("changeStatus");
-const taskEditor = document.getElementById("taskEditor");
+const taskModal = document.getElementById("taskModal");
+const taskModalContent = document.getElementById("taskModalContent");
+const taskModalBackdrop = document.getElementById("taskModalBackdrop");
 
 function escapeHtml(value) {
   return String(value)
@@ -573,10 +576,28 @@ function clearDragVisuals(element) {
   element.classList.remove("dragging", "resizing-start", "resizing-end");
 }
 
+function openTaskModal(recordId) {
+  state.selectedTaskId = recordId;
+  renderTaskModal();
+  taskModal.hidden = false;
+}
+
+function closeTaskModal() {
+  taskModal.hidden = true;
+}
+
 function handleTaskPointerMove(event, element) {
   if (!dragState.active) return;
   const record = getRecord(dragState.recordId);
   if (!record) return;
+
+  const deltaX = event.clientX - dragState.startX;
+  const deltaY = event.clientY - dragState.startY;
+  const threshold = dragState.mode === "move" ? 10 : 6;
+  if (!dragState.moved && Math.abs(deltaX) < threshold && Math.abs(deltaY) < threshold) {
+    return;
+  }
+  dragState.moved = true;
 
   const deltaDays = Math.round((event.clientX - dragState.startX) / 150);
   let nextStart = dragState.startDate;
@@ -602,12 +623,16 @@ function handleTaskPointerMove(event, element) {
 
 function finishTaskPointerDrag(element) {
   if (!dragState.active) return;
+  const shouldOpenModal = dragState.mode === "move" && !dragState.moved;
   dragState.active = false;
   dragState.mode = null;
+  const recordId = dragState.recordId;
   dragState.recordId = null;
   dragState.pointerId = null;
+  dragState.moved = false;
   clearDragVisuals(element);
   renderAll();
+  if (shouldOpenModal && recordId) openTaskModal(recordId);
 }
 
 function startTaskPointerDrag(event, mode) {
@@ -626,6 +651,7 @@ function startTaskPointerDrag(event, mode) {
   dragState.endDate = record.end;
   dragState.originalAssignee = record.assignee;
   dragState.pointerId = event.pointerId;
+  dragState.moved = false;
   bar.setPointerCapture(event.pointerId);
   syncTaskBarVisual(record, bar, mode);
 
@@ -751,24 +777,47 @@ function renderStatus() {
 
   if (dirtyCount === 0) {
     changeStatus.textContent = selected
-      ? "Drag the selected task to move it. Drag the left or right edge to resize it. Change assignee from the board-side task panel."
-      : "Drag a task bar to move dates. Drag its edges to resize. Change assignee from the board-side task panel.";
+      ? "Drag the selected task to move it. Drag the left or right edge to resize it. Click a task to open the edit overlay."
+      : "Drag a task bar to move dates. Drag its edges to resize. Click a task to open the edit overlay.";
     return;
   }
 
   changeStatus.textContent = `${dirtyCount} task${dirtyCount === 1 ? "" : "s"} changed from the original CSV. Download to export the edited sheet or use Undo CSV changes to revert everything.`;
 }
 
-function renderEditor() {
+function updateTask(recordId, changes) {
+  const record = getRecord(recordId);
+  if (!record) return;
+
+  if (typeof changes.assignee === "string") record.assignee = changes.assignee;
+  if (changes.start) record.start = normalizeBusinessDate(changes.start, "forward") || record.start;
+  if (changes.end) record.end = normalizeBusinessDate(changes.end, "backward") || record.end;
+
+  if (changes.syncEndIfNeeded && record.end < record.start) record.end = record.start;
+
+  if (changes.workingDays) {
+    const start = normalizeBusinessDate(record.start, "forward") || record.start;
+    record.start = start;
+    record.end = addBusinessDays(start, changes.workingDays);
+  } else if (record.end < record.start) {
+    record.end = record.start;
+  }
+
+  record.days = dateRangeBusiness(record.start, record.end);
+  renderAll();
+  if (!taskModal.hidden) renderTaskModal();
+}
+
+function renderTaskModal() {
   const record = getRecord(state.selectedTaskId);
   if (!record) {
-    taskEditor.innerHTML = '<div class="editor-empty"><strong>Board editing</strong><br />Move tasks directly on the timeline. Drag the bar to shift dates, drag the left or right edge to change duration, and select a task to change its assignee here.</div>';
+    taskModalContent.innerHTML = '<div class="editor-empty"><strong>Task editor</strong><br />Select a task on the board to edit it.</div>';
     return;
   }
 
   const original = getOriginalRecord(record.id);
   const dirty = isTaskDirty(record);
-  taskEditor.innerHTML = `
+  taskModalContent.innerHTML = `
     <div class="section-title">Selected task</div>
     <div class="editor-head">
       <div>
@@ -788,14 +837,48 @@ function renderEditor() {
     </div>
     <div class="editor-help">Current: ${escapeHtml(record.assignee)} • ${escapeHtml(record.start)} to ${escapeHtml(record.end)} (${record.days.length} working day${record.days.length === 1 ? "" : "s"})</div>
     <div class="editor-help">Original: ${escapeHtml(original.assignee)} • ${escapeHtml(original.start)} to ${escapeHtml(original.end)} (${original.days.length} working day${original.days.length === 1 ? "" : "s"})</div>
-    <div class="editor-help">Drag on the board to update dates and duration. Use this selector to change assignee. Download the CSV when you are happy with the changes.</div>
+    <div class="input-grid">
+      <div class="editor-field">
+        <label for="editStart">Start date</label>
+        <input id="editStart" class="editor-input" type="date" value="${escapeHtml(record.start)}" />
+      </div>
+      <div class="editor-field">
+        <label for="editEnd">End date</label>
+        <input id="editEnd" class="editor-input" type="date" value="${escapeHtml(record.end)}" />
+      </div>
+    </div>
+    <div class="input-grid">
+      <div class="editor-field">
+        <label for="editDays">Working days</label>
+        <input id="editDays" class="editor-input" type="number" min="1" step="1" value="${record.days.length}" />
+      </div>
+      <div class="editor-field">
+        <label>&nbsp;</label>
+        <div class="editor-help">Drag on the board to update dates and duration. Download the CSV when you are happy with the changes.</div>
+      </div>
+    </div>
+    <div class="editor-actions">
+      <button class="action light" id="closeTaskModal">Close</button>
+    </div>
   `;
 
   document.getElementById("editAssignee").addEventListener("change", event => {
-    const nextAssignee = event.target.value;
-    record.assignee = nextAssignee;
-    renderAll();
+    updateTask(record.id, { assignee: event.target.value });
   });
+
+  document.getElementById("editStart").addEventListener("change", event => {
+    updateTask(record.id, { start: event.target.value, syncEndIfNeeded: true });
+  });
+
+  document.getElementById("editEnd").addEventListener("change", event => {
+    updateTask(record.id, { end: event.target.value });
+  });
+
+  document.getElementById("editDays").addEventListener("change", event => {
+    updateTask(record.id, { workingDays: Math.max(1, Number(event.target.value) || 1) });
+  });
+
+  document.getElementById("closeTaskModal").addEventListener("click", closeTaskModal);
 }
 
 function renderView() {
@@ -815,7 +898,7 @@ function renderAll() {
   renderOptions();
   renderView();
   renderStatus();
-  renderEditor();
+  if (!taskModal.hidden) renderTaskModal();
 }
 
 function resetFilters() {
@@ -839,6 +922,7 @@ function resetFilters() {
 function resetChanges() {
   state.records = cloneRecords(state.originalRecords);
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
+  closeTaskModal();
   renderAll();
 }
 
@@ -955,6 +1039,7 @@ function bindEvents() {
   document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
   document.getElementById("undoChangesBtn").addEventListener("click", resetChanges);
   document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
+  taskModalBackdrop.addEventListener("click", closeTaskModal);
 }
 
 async function init() {
