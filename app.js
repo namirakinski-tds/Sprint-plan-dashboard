@@ -995,12 +995,12 @@ function applyParsedData(parsed) {
 }
 
 async function loadDefaultCsv() {
-  const response = await fetch("./default-template.csv");
-  if (!response.ok) throw new Error("Default CSV template not found");
-  const text = await response.text();
-  const parsed = parseCsvText(text, "default-template.csv");
-  if (!parsed) throw new Error("Default CSV template could not be parsed");
-  applyParsedData(parsed);
+  state.source = null;
+  state.fileName = "planning-viewer.csv";
+  state.records = [];
+  state.originalRecords = [];
+  state.selectedTaskId = null;
+  renderAll();
 }
 
 function bindEvents() {
@@ -1044,12 +1044,7 @@ function bindEvents() {
 
 async function init() {
   bindEvents();
-  try {
-    await loadDefaultCsv();
-  } catch (error) {
-    board.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
-    changeStatus.textContent = "Upload your sprint CSV to start editing.";
-  }
+  await loadDefaultCsv();
 }
 
 init();
