@@ -4,6 +4,8 @@ create table if not exists public.planning_workspaces (
   id text primary key,
   file_name text not null,
   csv_rows jsonb not null,
+  owner_name text,
+  owner_client text,
   last_published_by_name text,
   last_published_by_client text,
   created_at timestamptz not null default now(),
@@ -20,16 +22,24 @@ create table if not exists public.planning_tasks (
   assignee text not null,
   start_date date not null,
   end_date date not null,
+  editing_by_name text,
+  editing_by_client text,
+  editing_started_at timestamptz,
   updated_by_name text,
   updated_by_client text,
   updated_at timestamptz not null default now()
 );
 
 alter table public.planning_workspaces
+  add column if not exists owner_name text,
+  add column if not exists owner_client text,
   add column if not exists last_published_by_name text,
   add column if not exists last_published_by_client text;
 
 alter table public.planning_tasks
+  add column if not exists editing_by_name text,
+  add column if not exists editing_by_client text,
+  add column if not exists editing_started_at timestamptz,
   add column if not exists updated_by_name text,
   add column if not exists updated_by_client text;
 
@@ -60,6 +70,13 @@ for update
 to anon, authenticated
 using (true)
 with check (true);
+
+drop policy if exists "workspace delete" on public.planning_workspaces;
+create policy "workspace delete"
+on public.planning_workspaces
+for delete
+to anon, authenticated
+using (true);
 
 drop policy if exists "task read" on public.planning_tasks;
 create policy "task read"

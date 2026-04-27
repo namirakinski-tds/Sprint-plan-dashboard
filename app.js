@@ -22,6 +22,7 @@ const state = {
     name: "",
     clientId: ""
   },
+  currentWorkspace: null,
   selectedWorkspaceOption: "",
   availableWorkspaces: [],
   remoteToasts: [],
@@ -99,6 +100,8 @@ const defaultSyncConfig = {
   anonKey: "sb_publishable_qDXHe21m5T_OP0urEu95EA_5WBxqOYs",
   workspaceId: ""
 };
+const taskLockRefreshMs = 15000;
+const taskLockStaleMs = 90000;
 
 function createClientId() {
   if (window.crypto && typeof window.crypto.randomUUID === "function") {
@@ -141,6 +144,29 @@ function renderIdentity() {
   identityNameInput.value = state.user.name;
   workspaceUserNameInput.value = state.user.name;
   currentWorkspaceLabel.textContent = state.sync.workspaceId || "Not selected";
+  const deleteWorkspaceBtn = document.getElementById("deleteWorkspaceBtn");
+  if (deleteWorkspaceBtn) {
+    deleteWorkspaceBtn.hidden = !isCurrentUserWorkspaceOwner();
+  }
+}
+
+function setCurrentWorkspaceMeta(workspace) {
+  state.currentWorkspace = workspace ? {
+    id: workspace.id,
+    fileName: workspace.file_name || "",
+    ownerName: workspace.owner_name || "",
+    ownerClient: workspace.owner_client || ""
+  } : null;
+  renderIdentity();
+}
+
+function isCurrentUserWorkspaceOwner() {
+  return Boolean(
+    state.currentWorkspace &&
+    state.currentWorkspace.ownerClient &&
+    state.user.clientId &&
+    state.currentWorkspace.ownerClient === state.user.clientId
+  );
 }
 
 function openIdentityModal(forceFocus) {
@@ -173,6 +199,7 @@ function renderWorkspaceList() {
     <button class="workspace-option ${workspace.id === state.selectedWorkspaceOption ? "active" : ""}" type="button" data-workspace-option="${escapeHtml(workspace.id)}">
       <div class="workspace-name">${escapeHtml(workspace.id)}</div>
       <div class="workspace-meta">${escapeHtml(workspace.file_name || "Shared planning board")}</div>
+      <div class="workspace-meta">Owner ${escapeHtml(workspace.owner_name || "Unknown")}</div>
       <div class="workspace-meta">Updated ${escapeHtml(new Date(workspace.updated_at).toLocaleString("en-GB"))}</div>
     </button>
   `).join("");
@@ -211,7 +238,7 @@ async function fetchAvailableWorkspaces() {
   if (!state.sync.client) return [];
   const { data, error } = await state.sync.client
     .from("planning_workspaces")
-    .select("id, file_name, updated_at")
+    .select("id, file_name, owner_name, owner_client, updated_at")
     .order("updated_at", { ascending: false });
 
   if (error) {
@@ -228,11 +255,20 @@ async function fetchAvailableWorkspaces() {
 }
 
 async function activateWorkspace(workspaceId, options = {}) {
-  const { loadExisting = true, notifyChanges = false, parsedData = null } = options;
+  const { loadExisting = true, notifyChanges = false, parsedData = null, owner = null } = options;
+  if (!taskModal.hidden) await closeTaskModal();
   await clearLocalTaskPresence();
   state.sync.workspaceId = workspaceId;
   state.selectedWorkspaceOption = workspaceId;
   persistWorkspaceSelection(workspaceId);
+  if (owner) {
+    setCurrentWorkspaceMeta({
+      id: workspaceId,
+      file_name: parsedData ? parsedData.fileName : "",
+      owner_name: owner.owner_name || "",
+      owner_client: owner.owner_client || ""
+    });
+  }
   renderIdentity();
   subscribeToWorkspace(workspaceId);
 
@@ -278,6 +314,11 @@ async function submitCreateWorkspace() {
     newWorkspaceIdInput.focus();
     return;
   }
+  if (state.availableWorkspaces.some(workspace => workspace.id === workspaceId)) {
+    setWorkspaceModalNote(`Workspace "${workspaceId}" already exists. Choose it from the list or use a new ID.`, "error");
+    newWorkspaceIdInput.focus();
+    return;
+  }
   const file = newWorkspaceCsvInput.files && newWorkspaceCsvInput.files[0];
   if (!file) {
     setWorkspaceModalNote("Upload the CSV that belongs to this new workspace.", "error");
@@ -291,7 +332,11 @@ async function submitCreateWorkspace() {
     return;
   }
   persistUserIdentity(name);
-  await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false, parsedData: parsed });
+  const namespaced = namespaceParsedDataForWorkspace(parsed, workspaceId);
+  await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false, parsedData: namespaced, owner: {
+    owner_name: state.user.name,
+    owner_client: state.user.clientId
+  } });
   closeWorkspaceModal();
 }
 
@@ -352,6 +397,13 @@ function flashRemoteTask(recordId) {
 }
 
 function getPresenceForTask(taskId) {
+  const record = getRecord(taskId);
+  if (isTaskLockedByOther(record)) {
+    return {
+      name: getTaskEditorName(record),
+      clientId: record.editingByClient
+    };
+  }
   return state.taskPresence.remoteByTaskId.get(taskId) || null;
 }
 
@@ -423,7 +475,10 @@ async function setLocalTaskPresence(taskId) {
   if (state.taskPresence.localTimer) clearInterval(state.taskPresence.localTimer);
   state.taskPresence.localTimer = window.setInterval(() => {
     broadcastTaskPresence(taskId, true);
-  }, 4000);
+    if (state.taskModalMode === "edit" && state.selectedTaskId === taskId) {
+      refreshTaskLock(taskId);
+    }
+  }, Math.min(4000, taskLockRefreshMs));
 }
 
 async function clearLocalTaskPresence() {
@@ -435,6 +490,67 @@ async function clearLocalTaskPresence() {
   state.taskPresence.localTaskId = "";
   if (currentTaskId) {
     await broadcastTaskPresence(currentTaskId, false);
+  }
+}
+
+async function fetchTaskLock(recordId) {
+  if (!recordId || !state.sync.client || !state.sync.workspaceId) return null;
+  const { data } = await state.sync.client
+    .from("planning_tasks")
+    .select("id, editing_by_name, editing_by_client, editing_started_at")
+    .eq("workspace_id", state.sync.workspaceId)
+    .eq("id", recordId)
+    .maybeSingle();
+  return data || null;
+}
+
+async function refreshTaskLock(recordId) {
+  if (!recordId || !state.sync.client || !state.sync.workspaceId || !state.user.clientId) return false;
+  const now = new Date().toISOString();
+  const staleBefore = new Date(Date.now() - taskLockStaleMs).toISOString();
+  const { data, error } = await state.sync.client
+    .from("planning_tasks")
+    .update({
+      editing_by_name: state.user.name,
+      editing_by_client: state.user.clientId,
+      editing_started_at: now
+    })
+    .eq("workspace_id", state.sync.workspaceId)
+    .eq("id", recordId)
+    .or(`editing_by_client.is.null,editing_by_client.eq.${state.user.clientId},editing_started_at.lt.${staleBefore}`)
+    .select("id, editing_by_name, editing_by_client, editing_started_at")
+    .maybeSingle();
+
+  if (error) return false;
+  if (!data) return false;
+
+  const record = getRecord(recordId);
+  if (record) {
+    record.editingByName = data.editing_by_name || "";
+    record.editingByClient = data.editing_by_client || "";
+    record.editingStartedAt = data.editing_started_at || "";
+  }
+  return true;
+}
+
+async function releaseTaskLock(recordId) {
+  if (!recordId || !state.sync.client || !state.sync.workspaceId || !state.user.clientId) return;
+  const record = getRecord(recordId);
+  const { error } = await state.sync.client
+    .from("planning_tasks")
+    .update({
+      editing_by_name: null,
+      editing_by_client: null,
+      editing_started_at: null
+    })
+    .eq("workspace_id", state.sync.workspaceId)
+    .eq("id", recordId)
+    .eq("editing_by_client", state.user.clientId);
+
+  if (!error && record && record.editingByClient === state.user.clientId) {
+    record.editingByName = "";
+    record.editingByClient = "";
+    record.editingStartedAt = "";
   }
 }
 
@@ -456,6 +572,23 @@ function cloneRecords(records) {
 
 function cloneRows(rows) {
   return rows.map(row => [...row]);
+}
+
+function buildWorkspaceScopedTaskId(workspaceId, baseId) {
+  const scope = String(workspaceId || "").trim();
+  const localId = String(baseId || "").trim();
+  if (!scope) return localId;
+  return localId.startsWith(`${scope}::`) ? localId : `${scope}::${localId}`;
+}
+
+function namespaceParsedDataForWorkspace(parsed, workspaceId) {
+  return {
+    ...parsed,
+    records: parsed.records.map(record => enrichRecord({
+      ...record,
+      id: buildWorkspaceScopedTaskId(workspaceId, record.id)
+    }))
+  };
 }
 
 function createTaskDraft(record) {
@@ -658,6 +791,9 @@ function enrichRecord(record) {
     ...record,
     department: normalizeLabel(record.department),
     assignee: normalizeLabel(record.assignee),
+    editingByName: record.editingByName || "",
+    editingByClient: record.editingByClient || "",
+    editingStartedAt: record.editingStartedAt || "",
     updatedByName: record.updatedByName || "",
     updatedByClient: record.updatedByClient || "",
     days: dateRangeBusiness(record.start, record.end)
@@ -795,6 +931,27 @@ function getRecord(recordId) {
   return state.records.find(record => record.id === recordId) || null;
 }
 
+function isTaskLockActive(record) {
+  if (!record || !record.editingByClient || !record.editingStartedAt) return false;
+  const startedAt = new Date(record.editingStartedAt).getTime();
+  if (!Number.isFinite(startedAt)) return false;
+  return (Date.now() - startedAt) < taskLockStaleMs;
+}
+
+function isTaskLockedByOther(record) {
+  return Boolean(
+    record &&
+    isTaskLockActive(record) &&
+    record.editingByClient &&
+    record.editingByClient !== state.user.clientId
+  );
+}
+
+function getTaskEditorName(record) {
+  if (!record) return "A teammate";
+  return record.editingByName || record.updatedByName || "A teammate";
+}
+
 function isAppAdded(record) {
   return Boolean(record && String(record.id).startsWith("app-"));
 }
@@ -802,7 +959,14 @@ function isAppAdded(record) {
 function isTaskDirty(record) {
   const original = getOriginalRecord(record.id);
   if (!original) return true;
-  return record.assignee !== original.assignee || record.start !== original.start || record.end !== original.end;
+  return (
+    record.task !== original.task ||
+    record.department !== original.department ||
+    record.epic !== original.epic ||
+    record.assignee !== original.assignee ||
+    record.start !== original.start ||
+    record.end !== original.end
+  );
 }
 
 function getDirtyRecords() {
@@ -824,6 +988,9 @@ function toWorkspaceTaskRows(records, workspaceId) {
     assignee: record.assignee,
     start_date: record.start,
     end_date: record.end,
+    editing_by_name: record.editingByName || null,
+    editing_by_client: record.editingByClient || null,
+    editing_started_at: record.editingStartedAt || null,
     updated_by_name: record.updatedByName || state.user.name || "",
     updated_by_client: record.updatedByClient || state.user.clientId || ""
   }));
@@ -842,6 +1009,9 @@ function fromWorkspaceTaskRows(taskRows) {
       assignee: row.assignee,
       start: row.start_date,
       end: row.end_date,
+      editingByName: row.editing_by_name || "",
+      editingByClient: row.editing_by_client || "",
+      editingStartedAt: row.editing_started_at || "",
       updatedByName: row.updated_by_name || "",
       updatedByClient: row.updated_by_client || ""
     }));
@@ -857,6 +1027,8 @@ function describeFieldChange(label, before, after) {
 
 function getRecordChangeDetails(previous, next) {
   const details = [];
+  if (previous.task !== next.task) details.push(describeFieldChange("task", previous.task, next.task));
+  if (previous.epic !== next.epic) details.push(describeFieldChange("epic", previous.epic, next.epic));
   if (previous.start !== next.start) details.push(describeFieldChange("start date", previous.start, next.start));
   if (previous.end !== next.end) details.push(describeFieldChange("end date", previous.end, next.end));
   if (previous.assignee !== next.assignee) details.push(describeFieldChange("assignee", previous.assignee, next.assignee));
@@ -997,6 +1169,8 @@ async function publishCurrentBoard() {
       id: workspaceId,
       file_name: state.fileName,
       csv_rows: state.source.rows,
+      owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
+      owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
       last_published_by_name: state.user.name,
       last_published_by_client: state.user.clientId
     });
@@ -1023,6 +1197,12 @@ async function publishCurrentBoard() {
   }
 
   setSyncStatus(`Published ${state.records.length} tasks to workspace "${workspaceId}".`, "connected");
+  setCurrentWorkspaceMeta({
+    id: workspaceId,
+    file_name: state.fileName,
+    owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
+    owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId
+  });
   await fetchAvailableWorkspaces();
 }
 
@@ -1037,7 +1217,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
 
   const { data: workspaceRow, error: workspaceError } = await client
     .from("planning_workspaces")
-    .select("id, file_name, csv_rows, last_published_by_name, last_published_by_client")
+    .select("id, file_name, csv_rows, owner_name, owner_client, last_published_by_name, last_published_by_client")
     .eq("id", workspaceId)
     .maybeSingle();
   if (workspaceError) {
@@ -1045,13 +1225,16 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
     return;
   }
   if (!workspaceRow) {
+    state.sync.workspaceId = "";
+    persistWorkspaceSelection("");
+    await loadDefaultCsv();
     if (!silent) setSyncStatus(`Workspace "${workspaceId}" does not exist yet. Publish a board first.`, "dirty");
     return;
   }
 
   const { data: taskRows, error: taskError } = await client
     .from("planning_tasks")
-    .select("id, workspace_id, row_index, department, epic, task, assignee, start_date, end_date, updated_by_name, updated_by_client")
+    .select("id, workspace_id, row_index, department, epic, task, assignee, start_date, end_date, editing_by_name, editing_by_client, editing_started_at, updated_by_name, updated_by_client")
     .eq("workspace_id", workspaceId);
   if (taskError) {
     if (!silent) setSyncStatus(`Could not load workspace tasks: ${taskError.message}`, "dirty");
@@ -1069,6 +1252,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   const changedTaskIds = applyRemoteChanges(previousRecords, nextRecords, workspaceRow, notifyChanges && previousRecords.length > 0);
 
   state.sync.applyingRemote = true;
+  setCurrentWorkspaceMeta(workspaceRow);
   state.source = parsed.source;
   state.fileName = parsed.fileName;
   state.records = nextRecords;
@@ -1078,6 +1262,41 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   renderAll();
   changedTaskIds.forEach(flashRemoteTask);
   if (!silent) setSyncStatus(`Loaded workspace "${workspaceId}" with ${state.records.length} tasks.`, "connected");
+}
+
+async function deleteCurrentWorkspace() {
+  if (!state.sync.connected || !state.sync.client || !state.sync.workspaceId || !state.currentWorkspace) return;
+  if (!isCurrentUserWorkspaceOwner()) {
+    alert("Only the workspace owner can delete this workspace.");
+    return;
+  }
+
+  const confirmed = window.confirm(`Delete workspace "${state.sync.workspaceId}" and all of its tasks for everyone?`);
+  if (!confirmed) return;
+
+  const workspaceId = state.sync.workspaceId;
+  await clearLocalTaskPresence();
+  if (!taskModal.hidden) taskModal.hidden = true;
+
+  const { error } = await state.sync.client
+    .from("planning_workspaces")
+    .delete()
+    .eq("id", workspaceId)
+    .eq("owner_client", state.user.clientId);
+
+  if (error) {
+    setSyncStatus(`Could not delete workspace "${workspaceId}": ${error.message}`, "dirty");
+    return;
+  }
+
+  persistWorkspaceSelection("");
+  state.sync.workspaceId = "";
+  state.selectedWorkspaceOption = "";
+  closeWorkspaceMenu();
+  await fetchAvailableWorkspaces();
+  await loadDefaultCsv();
+  setSyncStatus(`Workspace "${workspaceId}" was deleted. Choose or create another workspace to continue.`, "connected");
+  openWorkspaceModal();
 }
 
 async function persistTaskToWorkspace(record) {
@@ -1099,6 +1318,9 @@ async function persistTaskToWorkspace(record) {
       assignee: record.assignee,
       start_date: record.start,
       end_date: record.end,
+      editing_by_name: record.editingByName || null,
+      editing_by_client: record.editingByClient || null,
+      editing_started_at: record.editingStartedAt || null,
       updated_by_name: record.updatedByName,
       updated_by_client: record.updatedByClient
     });
@@ -1218,7 +1440,18 @@ function renderChips() {
     activeChips.appendChild(chip);
   });
 
+  const seenPresence = new Set();
+  state.records.forEach(record => {
+    if (!isTaskLockedByOther(record)) return;
+    seenPresence.add(record.id);
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `${getTaskEditorName(record)} editing ${record.task}`;
+    activeChips.appendChild(chip);
+  });
+
   state.taskPresence.remoteByTaskId.forEach((presence, taskId) => {
+    if (seenPresence.has(taskId)) return;
     const record = getRecord(taskId);
     if (!record) return;
     const chip = document.createElement("span");
@@ -1306,6 +1539,7 @@ function taskBarHtml(task, colorMap) {
   const classes = [
     "task-bar",
     isAppAdded(task) ? "app-added" : "",
+    isTaskLockedByOther(task) ? "locked" : "",
     isTaskDirty(task) ? "dirty" : "",
     state.remoteFlashTaskIds.has(task.id) ? "remote-flash" : "",
     task.id === state.selectedTaskId ? "selected" : ""
@@ -1335,9 +1569,38 @@ function clearDragVisuals(element) {
   element.classList.remove("dragging", "resizing-start", "resizing-end");
 }
 
-function openTaskModal(recordId) {
+function openLockedTaskModal(recordId, lockedByName) {
   const record = getRecord(recordId);
   if (!record) return;
+  state.selectedTaskId = recordId;
+  state.taskModalMode = "locked";
+  state.taskDraft = createTaskDraft(record);
+  renderTaskModal(lockedByName || getTaskEditorName(record));
+  taskModal.hidden = false;
+}
+
+async function openTaskModal(recordId) {
+  const record = getRecord(recordId);
+  if (!record) return;
+  if (isTaskLockedByOther(record)) {
+    openLockedTaskModal(recordId, getTaskEditorName(record));
+    return;
+  }
+
+  const locked = await refreshTaskLock(recordId);
+  if (!locked) {
+    const remoteLock = await fetchTaskLock(recordId);
+    const recordRef = getRecord(recordId);
+    if (recordRef && remoteLock) {
+      recordRef.editingByName = remoteLock.editing_by_name || "";
+      recordRef.editingByClient = remoteLock.editing_by_client || "";
+      recordRef.editingStartedAt = remoteLock.editing_started_at || "";
+      renderAll();
+    }
+    openLockedTaskModal(recordId, remoteLock && remoteLock.editing_by_name ? remoteLock.editing_by_name : "A teammate");
+    return;
+  }
+
   state.selectedTaskId = recordId;
   state.taskModalMode = "edit";
   state.taskDraft = createTaskDraft(record);
@@ -1354,11 +1617,13 @@ function openCreateTaskModal() {
   taskModal.hidden = false;
 }
 
-function closeTaskModal() {
+async function closeTaskModal() {
+  const lockedTaskId = state.taskModalMode === "edit" ? state.selectedTaskId : "";
   taskModal.hidden = true;
   state.taskDraft = null;
   state.taskModalMode = "edit";
-  clearLocalTaskPresence();
+  await clearLocalTaskPresence();
+  if (lockedTaskId) await releaseTaskLock(lockedTaskId);
 }
 
 async function deleteTaskFromWorkspace(recordId) {
@@ -1422,7 +1687,7 @@ async function saveTaskDraft() {
   if (state.taskModalMode === "create") {
     const nextRowIndex = state.records.reduce((max, record) => Math.max(max, Number(record.rowIndex) || 0), 2) + 1;
     const newRecord = enrichRecord({
-      id: `app-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      id: buildWorkspaceScopedTaskId(state.sync.workspaceId, `app-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`),
       rowIndex: nextRowIndex,
       department: normalized.department,
       epic: normalized.epic,
@@ -1438,7 +1703,7 @@ async function saveTaskDraft() {
     state.selectedTaskId = newRecord.id;
     renderAll();
     await persistTaskToWorkspace(newRecord);
-    closeTaskModal();
+    await closeTaskModal();
     return;
   }
 
@@ -1447,7 +1712,7 @@ async function saveTaskDraft() {
   applyTaskChanges(record, normalized);
   renderAll();
   await persistTaskToWorkspace(record);
-  closeTaskModal();
+  await closeTaskModal();
 }
 
 async function confirmDeleteSelectedTask() {
@@ -1456,10 +1721,13 @@ async function confirmDeleteSelectedTask() {
   const confirmed = window.confirm(`Delete task "${record.task}" from workspace "${state.sync.workspaceId}"?`);
   if (!confirmed) return;
 
+  await clearLocalTaskPresence();
   state.records = state.records.filter(item => item.id !== record.id);
   state.selectedTaskId = null;
   renderAll();
-  closeTaskModal();
+  taskModal.hidden = true;
+  state.taskDraft = null;
+  state.taskModalMode = "edit";
   await deleteTaskFromWorkspace(record.id);
 }
 
@@ -1532,6 +1800,11 @@ function startTaskPointerDrag(event, mode) {
   if (!bar) return;
   const record = getRecord(bar.dataset.taskId);
   if (!record) return;
+  if (isTaskLockedByOther(record)) {
+    event.preventDefault();
+    openLockedTaskModal(record.id, getTaskEditorName(record));
+    return;
+  }
   event.preventDefault();
   state.selectedTaskId = record.id;
   setLocalTaskPresence(record.id);
@@ -1694,17 +1967,58 @@ function updateTask(recordId, changes) {
   persistTaskToWorkspace(record);
 }
 
-function renderTaskModal() {
-  const record = state.taskModalMode === "edit" ? getRecord(state.selectedTaskId) : null;
+function getSelectModeValue(value, options) {
+  return options.includes(value) ? value : "__new__";
+}
+
+function buildSelectOptions(options, selectedValue, placeholder) {
+  const unique = Array.from(new Set(options.filter(Boolean))).sort();
+  const selectedMode = getSelectModeValue(selectedValue, unique);
+  const optionHtml = unique.map(option => `
+    <option value="${escapeHtml(option)}" ${option === selectedMode ? "selected" : ""}>${escapeHtml(option)}</option>
+  `).join("");
+  return `
+    <option value="">${escapeHtml(placeholder)}</option>
+    ${optionHtml}
+    <option value="__new__" ${selectedMode === "__new__" ? "selected" : ""}>Add new…</option>
+  `;
+}
+
+function getDraftValueFromSelect(selectId, customId) {
+  const select = document.getElementById(selectId);
+  const custom = document.getElementById(customId);
+  if (!select) return "";
+  if (select.value === "__new__") return custom ? custom.value.trim() : "";
+  return select.value.trim();
+}
+
+function toggleCustomField(selectId, customId) {
+  const select = document.getElementById(selectId);
+  const custom = document.getElementById(customId);
+  if (!select || !custom) return;
+  custom.hidden = select.value !== "__new__";
+  if (!custom.hidden) {
+    custom.focus();
+    custom.select();
+  }
+}
+
+function renderTaskModal(lockOwnerName = "") {
+  const record = state.taskModalMode === "create" ? null : getRecord(state.selectedTaskId);
   const draft = state.taskDraft;
   if (!draft) {
     taskModalContent.innerHTML = '<div class="editor-empty"><strong>Task editor</strong><br />Select a task on the board to edit it.</div>';
     return;
   }
 
+  const departments = getDepartments();
+  const epics = getEpics();
+  const assignees = getAssignees();
   const original = record ? getOriginalRecord(record.id) : null;
   const isNewTask = state.taskModalMode === "create" || isAppAdded(record);
   const dirty = record ? isTaskDirty(record) : true;
+  const locked = state.taskModalMode === "locked";
+  const lockLabel = lockOwnerName || (record ? getTaskEditorName(record) : "A teammate");
   taskModalContent.innerHTML = `
     <div class="section-title">Selected task</div>
     <div class="editor-head">
@@ -1712,30 +2026,37 @@ function renderTaskModal() {
         <div class="editor-title">${escapeHtml(draft.task || "New task")}</div>
         <div class="editor-meta">${escapeHtml(draft.department)} • ${escapeHtml(draft.epic)}</div>
       </div>
-      <div class="editor-badge ${dirty ? "dirty" : ""}">${isNewTask ? "Added in app" : dirty ? "Edited" : "Original"}</div>
+      <div class="editor-badge ${locked || dirty ? "dirty" : ""}">${locked ? "Locked" : isNewTask ? "Added in app" : dirty ? "Edited" : "Original"}</div>
     </div>
+    ${locked ? `<div class="modal-note">${escapeHtml(lockLabel)} is editing this task right now. You can look, but you cannot change it until they close the editor.</div>` : ""}
     <div class="input-grid single">
       <div class="editor-field">
         <label for="editTaskName">Task summary</label>
-        <input id="editTaskName" class="editor-input" type="text" value="${escapeHtml(draft.task)}" />
+        <input id="editTaskName" class="editor-input" type="text" value="${escapeHtml(draft.task)}" ${locked ? "disabled" : ""} />
       </div>
     </div>
     <div class="input-grid">
       <div class="editor-field">
         <label for="editDepartment">Department</label>
-        <input id="editDepartment" class="editor-input" type="text" value="${escapeHtml(draft.department)}" />
+        <select id="editDepartment" class="editor-input" ${locked ? "disabled" : ""}>
+          ${buildSelectOptions(departments, draft.department, "Choose department")}
+        </select>
+        <input id="editDepartmentCustom" class="editor-input" type="text" placeholder="New department" value="${escapeHtml(departments.includes(draft.department) ? "" : draft.department)}" ${locked ? "disabled" : ""} ${departments.includes(draft.department) ? "hidden" : ""} />
       </div>
       <div class="editor-field">
         <label for="editEpic">Epic</label>
-        <input id="editEpic" class="editor-input" type="text" value="${escapeHtml(draft.epic)}" />
+        <select id="editEpic" class="editor-input" ${locked ? "disabled" : ""}>
+          ${buildSelectOptions(epics, draft.epic, "Choose epic")}
+        </select>
+        <input id="editEpicCustom" class="editor-input" type="text" placeholder="New epic" value="${escapeHtml(epics.includes(draft.epic) ? "" : draft.epic)}" ${locked ? "disabled" : ""} ${epics.includes(draft.epic) ? "hidden" : ""} />
       </div>
     </div>
     <div class="input-grid single">
       <div class="editor-field">
         <label for="editAssignee">Assignee</label>
-        <select id="editAssignee" class="editor-input">
-          ${getAssignees().map(name => `<option value="${escapeHtml(name)}" ${name === draft.assignee ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
-          ${getAssignees().includes(draft.assignee) ? "" : `<option value="${escapeHtml(draft.assignee)}" selected>${escapeHtml(draft.assignee)}</option>`}
+        <select id="editAssignee" class="editor-input" ${locked ? "disabled" : ""}>
+          ${assignees.map(name => `<option value="${escapeHtml(name)}" ${name === draft.assignee ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+          ${assignees.includes(draft.assignee) ? "" : `<option value="${escapeHtml(draft.assignee)}" selected>${escapeHtml(draft.assignee)}</option>`}
         </select>
       </div>
     </div>
@@ -1744,17 +2065,17 @@ function renderTaskModal() {
     <div class="input-grid">
       <div class="editor-field">
         <label for="editStart">Start date</label>
-        <input id="editStart" class="editor-input" type="date" value="${escapeHtml(draft.start)}" />
+        <input id="editStart" class="editor-input" type="date" value="${escapeHtml(draft.start)}" ${locked ? "disabled" : ""} />
       </div>
       <div class="editor-field">
         <label for="editEnd">End date</label>
-        <input id="editEnd" class="editor-input" type="date" value="${escapeHtml(draft.end)}" />
+        <input id="editEnd" class="editor-input" type="date" value="${escapeHtml(draft.end)}" ${locked ? "disabled" : ""} />
       </div>
     </div>
     <div class="input-grid">
       <div class="editor-field">
         <label for="editDays">Working days</label>
-        <input id="editDays" class="editor-input" type="number" min="1" step="1" value="${draft.workingDays}" />
+        <input id="editDays" class="editor-input" type="number" min="1" step="1" value="${draft.workingDays}" ${locked ? "disabled" : ""} />
       </div>
       <div class="editor-field">
         <label>&nbsp;</label>
@@ -1762,28 +2083,35 @@ function renderTaskModal() {
       </div>
     </div>
     <div class="editor-actions">
-      ${record ? '<button class="action light" id="deleteTaskBtn">Delete task</button>' : ""}
-      <button class="action dark" id="saveTaskBtn">Save</button>
+      ${record && !locked ? '<button class="action light" id="deleteTaskBtn">Delete task</button>' : ""}
+      ${locked ? "" : '<button class="action dark" id="saveTaskBtn">Save</button>'}
       <button class="action light" id="closeTaskModal">Close</button>
     </div>
   `;
 
-  document.getElementById("saveTaskBtn").addEventListener("click", () => {
-    state.taskDraft = {
-      task: document.getElementById("editTaskName").value.trim(),
-      department: document.getElementById("editDepartment").value.trim(),
-      epic: document.getElementById("editEpic").value.trim(),
-      assignee: document.getElementById("editAssignee").value.trim(),
-      start: document.getElementById("editStart").value,
-      end: document.getElementById("editEnd").value,
-      workingDays: Math.max(1, Number(document.getElementById("editDays").value) || 1)
-    };
-    saveTaskDraft();
-  });
-  if (record) {
+  if (!locked) {
+    document.getElementById("editDepartment").addEventListener("change", () => toggleCustomField("editDepartment", "editDepartmentCustom"));
+    document.getElementById("editEpic").addEventListener("change", () => toggleCustomField("editEpic", "editEpicCustom"));
+    document.getElementById("saveTaskBtn").addEventListener("click", () => {
+      state.taskDraft = {
+        task: document.getElementById("editTaskName").value.trim(),
+        department: getDraftValueFromSelect("editDepartment", "editDepartmentCustom"),
+        epic: getDraftValueFromSelect("editEpic", "editEpicCustom"),
+        assignee: document.getElementById("editAssignee").value.trim(),
+        start: document.getElementById("editStart").value,
+        end: document.getElementById("editEnd").value,
+        workingDays: Math.max(1, Number(document.getElementById("editDays").value) || 1)
+      };
+      saveTaskDraft();
+    });
+  }
+
+  if (record && !locked) {
     document.getElementById("deleteTaskBtn").addEventListener("click", confirmDeleteSelectedTask);
   }
-  document.getElementById("closeTaskModal").addEventListener("click", closeTaskModal);
+  document.getElementById("closeTaskModal").addEventListener("click", () => {
+    closeTaskModal();
+  });
 }
 
 function renderView() {
@@ -1922,6 +2250,7 @@ function applyParsedData(parsed) {
 }
 
 async function loadDefaultCsv() {
+  setCurrentWorkspaceMeta(null);
   state.source = null;
   state.fileName = "planning-viewer.csv";
   state.records = [];
@@ -1959,11 +2288,17 @@ function bindEvents() {
     await fetchAvailableWorkspaces();
     openWorkspaceModal();
   });
+  document.getElementById("deleteWorkspaceBtn").addEventListener("click", async () => {
+    closeWorkspaceMenu();
+    await deleteCurrentWorkspace();
+  });
   document.getElementById("addTaskBtn").addEventListener("click", () => {
     closeWorkspaceMenu();
     openCreateTaskModal();
   });
-  taskModalBackdrop.addEventListener("click", closeTaskModal);
+  taskModalBackdrop.addEventListener("click", () => {
+    closeTaskModal();
+  });
   document.getElementById("editIdentityBtn").addEventListener("click", () => {
     closeWorkspaceMenu();
     openIdentityModal(true);
@@ -1987,6 +2322,7 @@ function bindEvents() {
   });
   window.addEventListener("beforeunload", () => {
     clearLocalTaskPresence();
+    if (state.selectedTaskId && state.taskModalMode === "edit") releaseTaskLock(state.selectedTaskId);
   });
 }
 
