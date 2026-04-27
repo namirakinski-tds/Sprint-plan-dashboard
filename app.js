@@ -1580,8 +1580,17 @@ async function openTaskModal(recordId) {
       recordRef.editingStartedAt = remoteLock.editing_started_at || "";
       renderAll();
     }
-    openLockedTaskModal(recordId, remoteLock && remoteLock.editing_by_name ? remoteLock.editing_by_name : "A teammate");
-    return;
+    const remoteLockActive = Boolean(
+      remoteLock &&
+      remoteLock.editing_by_client &&
+      remoteLock.editing_by_client !== state.user.clientId &&
+      remoteLock.editing_started_at &&
+      (Date.now() - new Date(remoteLock.editing_started_at).getTime()) < taskLockStaleMs
+    );
+    if (remoteLockActive) {
+      openLockedTaskModal(recordId, remoteLock.editing_by_name || "A teammate");
+      return;
+    }
   }
 
   state.selectedTaskId = recordId;
