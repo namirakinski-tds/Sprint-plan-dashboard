@@ -15,7 +15,15 @@ const state = {
   originalRecords: [],
   selectedTaskId: null,
   source: null,
-  fileName: "planning-viewer.csv"
+  fileName: "planning-viewer.csv",
+  sync: {
+    client: null,
+    channel: null,
+    workspaceId: "",
+    connected: false,
+    applyingRemote: false,
+    refreshTimer: null
+  }
 };
 
 const dragState = {
@@ -48,9 +56,15 @@ const board = document.getElementById("board");
 const summary = document.getElementById("summary");
 const csvFile = document.getElementById("csvFile");
 const changeStatus = document.getElementById("changeStatus");
+const syncStatus = document.getElementById("syncStatus");
+const supabaseUrlInput = document.getElementById("supabaseUrl");
+const supabaseAnonKeyInput = document.getElementById("supabaseAnonKey");
+const workspaceIdInput = document.getElementById("workspaceId");
 const taskModal = document.getElementById("taskModal");
 const taskModalContent = document.getElementById("taskModalContent");
 const taskModalBackdrop = document.getElementById("taskModalBackdrop");
+
+const syncStorageKey = "planning-viewer-supabase-config";
 
 function escapeHtml(value) {
   return String(value)
@@ -70,6 +84,42 @@ function cloneRecords(records) {
 
 function cloneRows(rows) {
   return rows.map(row => [...row]);
+}
+
+function persistSyncInputs() {
+  localStorage.setItem(syncStorageKey, JSON.stringify({
+    url: supabaseUrlInput.value.trim(),
+    anonKey: supabaseAnonKeyInput.value.trim(),
+    workspaceId: workspaceIdInput.value.trim()
+  }));
+}
+
+function hydrateSyncInputs() {
+  try {
+    const raw = localStorage.getItem(syncStorageKey);
+    if (!raw) return;
+    const config = JSON.parse(raw);
+    supabaseUrlInput.value = config.url || "";
+    supabaseAnonKeyInput.value = config.anonKey || "";
+    workspaceIdInput.value = config.workspaceId || "";
+  } catch (_error) {
+    localStorage.removeItem(syncStorageKey);
+  }
+}
+
+function getSyncConfigFromInputs() {
+  return {
+    url: supabaseUrlInput.value.trim(),
+    anonKey: supabaseAnonKeyInput.value.trim(),
+    workspaceId: workspaceIdInput.value.trim()
+  };
+}
+
+function setSyncStatus(message, tone) {
+  syncStatus.textContent = message;
+  syncStatus.classList.remove("dirty", "connected");
+  if (tone === "dirty") syncStatus.classList.add("dirty");
+  if (tone === "connected") syncStatus.classList.add("connected");
 }
 
 function parseCsvRows(text) {
@@ -245,11 +295,8 @@ function buildHeaderDates(anchorDate, count) {
   return dates;
 }
 
-function parseCsvText(text, fileName) {
-  const rows = parseCsvRows(text);
-  if (rows.length && rows[rows.length - 1].every(cell => cell === "")) rows.pop();
+function parseCsvRowsData(rows, fileName) {
   if (rows.length < 4) return null;
-
   const header = rows[2];
   const colIndex = {};
   header.forEach((heading, index) => { colIndex[heading] = index; });
@@ -315,6 +362,12 @@ function parseCsvText(text, fileName) {
   };
 }
 
+function parseCsvText(text, fileName) {
+  const rows = parseCsvRows(text);
+  if (rows.length && rows[rows.length - 1].every(cell => cell === "")) rows.pop();
+  return parseCsvRowsData(rows, fileName);
+}
+
 function getDepartments() {
   return Array.from(new Set(state.records.map(record => record.department))).sort();
 }
@@ -363,6 +416,225 @@ function isTaskDirty(record) {
 
 function getDirtyRecords() {
   return state.records.filter(isTaskDirty);
+}
+
+function toWorkspaceTaskRows(records, workspaceId) {
+  return records.map(record => ({
+    id: record.id,
+    workspace_id: workspaceId,
+    row_index: record.rowIndex,
+    department: record.department,
+    epic: record.epic,
+    task: record.task,
+    assignee: record.assignee,
+    start_date: record.start,
+    end_date: record.end
+  }));
+}
+
+function fromWorkspaceTaskRows(taskRows) {
+  return taskRows
+    .slice()
+    .sort((a, b) => a.row_index - b.row_index)
+    .map(row => enrichRecord({
+      id: row.id,
+      rowIndex: row.row_index,
+      department: row.department,
+      epic: row.epic,
+      task: row.task,
+      assignee: row.assignee,
+      start: row.start_date,
+      end: row.end_date
+    }));
+}
+
+function clearSyncChannel() {
+  if (state.sync.channel) {
+    state.sync.channel.unsubscribe();
+    state.sync.channel = null;
+  }
+}
+
+function disconnectSync() {
+  clearSyncChannel();
+  state.sync.client = null;
+  state.sync.workspaceId = "";
+  state.sync.connected = false;
+  setSyncStatus("Live sync is off. Connect to Supabase to share edits with the team.");
+}
+
+function hasSupabaseSdk() {
+  return Boolean(window.supabase && typeof window.supabase.createClient === "function");
+}
+
+async function connectSync() {
+  const config = getSyncConfigFromInputs();
+  persistSyncInputs();
+
+  if (!hasSupabaseSdk()) {
+    setSyncStatus("Supabase client library is not available in this browser session.", "dirty");
+    return;
+  }
+  if (!config.url || !config.anonKey || !config.workspaceId) {
+    setSyncStatus("Fill in Supabase URL, anon key, and workspace ID first.", "dirty");
+    return;
+  }
+
+  clearSyncChannel();
+  state.sync.client = window.supabase.createClient(config.url, config.anonKey);
+  state.sync.workspaceId = config.workspaceId;
+  state.sync.connected = true;
+  subscribeToWorkspace(config.workspaceId);
+  setSyncStatus(`Connected to workspace "${config.workspaceId}".`, "connected");
+}
+
+function scheduleRemoteRefresh() {
+  if (!state.sync.connected || !state.sync.workspaceId) return;
+  if (state.sync.refreshTimer) clearTimeout(state.sync.refreshTimer);
+  state.sync.refreshTimer = setTimeout(() => {
+    loadWorkspaceFromRemote(true);
+  }, 150);
+}
+
+function subscribeToWorkspace(workspaceId) {
+  if (!state.sync.client) return;
+  clearSyncChannel();
+
+  state.sync.channel = state.sync.client
+    .channel(`planning-workspace:${workspaceId}`)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "planning_tasks",
+      filter: `workspace_id=eq.${workspaceId}`
+    }, scheduleRemoteRefresh)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "planning_workspaces",
+      filter: `id=eq.${workspaceId}`
+    }, scheduleRemoteRefresh)
+    .subscribe();
+}
+
+async function publishCurrentBoard() {
+  if (!state.sync.connected || !state.sync.client || !state.sync.workspaceId) {
+    setSyncStatus("Connect to Supabase before publishing the workspace.", "dirty");
+    return;
+  }
+  if (!state.source || state.records.length === 0) {
+    setSyncStatus("Upload a CSV before publishing a shared workspace.", "dirty");
+    return;
+  }
+
+  const workspaceId = state.sync.workspaceId;
+  const client = state.sync.client;
+
+  const { error: workspaceError } = await client
+    .from("planning_workspaces")
+    .upsert({
+      id: workspaceId,
+      file_name: state.fileName,
+      csv_rows: state.source.rows
+    });
+  if (workspaceError) {
+    setSyncStatus(`Could not publish workspace metadata: ${workspaceError.message}`, "dirty");
+    return;
+  }
+
+  const { error: deleteError } = await client
+    .from("planning_tasks")
+    .delete()
+    .eq("workspace_id", workspaceId);
+  if (deleteError) {
+    setSyncStatus(`Could not replace workspace tasks: ${deleteError.message}`, "dirty");
+    return;
+  }
+
+  const { error: insertError } = await client
+    .from("planning_tasks")
+    .insert(toWorkspaceTaskRows(state.records, workspaceId));
+  if (insertError) {
+    setSyncStatus(`Could not publish tasks: ${insertError.message}`, "dirty");
+    return;
+  }
+
+  setSyncStatus(`Published ${state.records.length} tasks to workspace "${workspaceId}".`, "connected");
+}
+
+async function loadWorkspaceFromRemote(silent) {
+  if (!state.sync.connected || !state.sync.client || !state.sync.workspaceId) {
+    if (!silent) setSyncStatus("Connect to Supabase before loading a workspace.", "dirty");
+    return;
+  }
+
+  const workspaceId = state.sync.workspaceId;
+  const client = state.sync.client;
+
+  const { data: workspaceRow, error: workspaceError } = await client
+    .from("planning_workspaces")
+    .select("id, file_name, csv_rows")
+    .eq("id", workspaceId)
+    .maybeSingle();
+  if (workspaceError) {
+    if (!silent) setSyncStatus(`Could not load workspace metadata: ${workspaceError.message}`, "dirty");
+    return;
+  }
+  if (!workspaceRow) {
+    if (!silent) setSyncStatus(`Workspace "${workspaceId}" does not exist yet. Publish a board first.`, "dirty");
+    return;
+  }
+
+  const { data: taskRows, error: taskError } = await client
+    .from("planning_tasks")
+    .select("id, workspace_id, row_index, department, epic, task, assignee, start_date, end_date")
+    .eq("workspace_id", workspaceId);
+  if (taskError) {
+    if (!silent) setSyncStatus(`Could not load workspace tasks: ${taskError.message}`, "dirty");
+    return;
+  }
+
+  const parsed = parseCsvRowsData(workspaceRow.csv_rows, workspaceRow.file_name);
+  if (!parsed) {
+    if (!silent) setSyncStatus("The workspace metadata could not be parsed back into a CSV board.", "dirty");
+    return;
+  }
+
+  state.sync.applyingRemote = true;
+  state.source = parsed.source;
+  state.fileName = parsed.fileName;
+  state.records = fromWorkspaceTaskRows(taskRows || []);
+  state.originalRecords = cloneRecords(state.records);
+  if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
+  state.sync.applyingRemote = false;
+  renderAll();
+  if (!silent) setSyncStatus(`Loaded workspace "${workspaceId}" with ${state.records.length} tasks.`, "connected");
+}
+
+async function persistTaskToWorkspace(record) {
+  if (!record || !state.sync.connected || !state.sync.client || !state.sync.workspaceId || state.sync.applyingRemote) {
+    return;
+  }
+
+  const { error } = await state.sync.client
+    .from("planning_tasks")
+    .upsert({
+      id: record.id,
+      workspace_id: state.sync.workspaceId,
+      row_index: record.rowIndex,
+      department: record.department,
+      epic: record.epic,
+      task: record.task,
+      assignee: record.assignee,
+      start_date: record.start,
+      end_date: record.end
+    });
+  if (error) {
+    setSyncStatus(`Could not sync task "${record.task}": ${error.message}`, "dirty");
+    return;
+  }
+
+  setSyncStatus(`Live sync connected to "${state.sync.workspaceId}". Last synced task: ${record.task}.`, "connected");
 }
 
 function updateStats(filtered) {
@@ -624,6 +896,7 @@ function handleTaskPointerMove(event, element) {
 function finishTaskPointerDrag(element) {
   if (!dragState.active) return;
   const shouldOpenModal = dragState.mode === "move" && !dragState.moved;
+  const changedRecord = dragState.moved ? getRecord(dragState.recordId) : null;
   dragState.active = false;
   dragState.mode = null;
   const recordId = dragState.recordId;
@@ -632,6 +905,7 @@ function finishTaskPointerDrag(element) {
   dragState.moved = false;
   clearDragVisuals(element);
   renderAll();
+  if (changedRecord) persistTaskToWorkspace(changedRecord);
   if (shouldOpenModal && recordId) openTaskModal(recordId);
 }
 
@@ -694,7 +968,9 @@ function renderBoard() {
   renderChips();
 
   if (filtered.length === 0 || dateCols.length === 0) {
-    board.innerHTML = '<div class="empty-state">No rows match the current filters.</div>';
+    board.innerHTML = state.records.length === 0
+      ? '<div class="empty-state">Upload a CSV or load a shared workspace to start planning.</div>'
+      : '<div class="empty-state">No rows match the current filters.</div>';
     return;
   }
 
@@ -733,7 +1009,9 @@ function renderSummary() {
   renderChips();
 
   if (filtered.length === 0) {
-    summary.innerHTML = '<div class="empty-state">No rows match the current filters.</div>';
+    summary.innerHTML = state.records.length === 0
+      ? '<div class="empty-state">Upload a CSV or load a shared workspace to see the summary.</div>'
+      : '<div class="empty-state">No rows match the current filters.</div>';
     return;
   }
 
@@ -806,6 +1084,7 @@ function updateTask(recordId, changes) {
   record.days = dateRangeBusiness(record.start, record.end);
   renderAll();
   if (!taskModal.hidden) renderTaskModal();
+  persistTaskToWorkspace(record);
 }
 
 function renderTaskModal() {
@@ -1019,6 +1298,9 @@ function bindEvents() {
   deptSearch.addEventListener("input", renderOptions);
   epicSearch.addEventListener("input", renderOptions);
   assigneeSearch.addEventListener("input", renderOptions);
+  supabaseUrlInput.addEventListener("change", persistSyncInputs);
+  supabaseAnonKeyInput.addEventListener("change", persistSyncInputs);
+  workspaceIdInput.addEventListener("change", persistSyncInputs);
 
   document.getElementById("deptAll").addEventListener("click", () => { getDepartments().forEach(value => state.selectedDepartments.add(value)); renderAll(); });
   document.getElementById("deptClear").addEventListener("click", () => { state.selectedDepartments.clear(); renderAll(); });
@@ -1039,10 +1321,15 @@ function bindEvents() {
   document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
   document.getElementById("undoChangesBtn").addEventListener("click", resetChanges);
   document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
+  document.getElementById("connectSyncBtn").addEventListener("click", connectSync);
+  document.getElementById("disconnectSyncBtn").addEventListener("click", disconnectSync);
+  document.getElementById("publishWorkspaceBtn").addEventListener("click", publishCurrentBoard);
+  document.getElementById("loadWorkspaceBtn").addEventListener("click", () => loadWorkspaceFromRemote(false));
   taskModalBackdrop.addEventListener("click", closeTaskModal);
 }
 
 async function init() {
+  hydrateSyncInputs();
   bindEvents();
   await loadDefaultCsv();
 }
