@@ -96,6 +96,7 @@ const identityNameInput = document.getElementById("identityName");
 const userStorageKey = "planning-viewer-user";
 const workspaceStorageKey = "planning-viewer-workspace";
 const workspaceQueryKey = "workspace";
+const workspaceCacheKey = "planning-viewer-workspace-cache";
 const defaultSyncConfig = {
   url: "https://xbzvlwbmdtqwdzoxnnxa.supabase.co",
   anonKey: "sb_publishable_qDXHe21m5T_OP0urEu95EA_5WBxqOYs",
@@ -200,6 +201,69 @@ function hydrateWorkspaceSelection() {
     state.sync.workspaceId = stored.trim();
   }
   renderIdentity();
+}
+
+function readWorkspaceCacheMap() {
+  try {
+    return JSON.parse(localStorage.getItem(workspaceCacheKey) || "{}");
+  } catch (_error) {
+    localStorage.removeItem(workspaceCacheKey);
+    return {};
+  }
+}
+
+function writeWorkspaceCacheMap(cacheMap) {
+  localStorage.setItem(workspaceCacheKey, JSON.stringify(cacheMap));
+}
+
+function persistWorkspaceCache(workspaceId, payload) {
+  if (!workspaceId || !payload || !payload.csvRows || !payload.taskRows) return;
+  const cacheMap = readWorkspaceCacheMap();
+  cacheMap[workspaceId] = {
+    workspaceId,
+    fileName: payload.fileName || "planning-viewer.csv",
+    csvRows: payload.csvRows,
+    taskRows: payload.taskRows,
+    ownerName: payload.ownerName || "",
+    ownerClient: payload.ownerClient || "",
+    cachedAt: new Date().toISOString()
+  };
+  writeWorkspaceCacheMap(cacheMap);
+}
+
+function clearWorkspaceCache(workspaceId) {
+  if (!workspaceId) return;
+  const cacheMap = readWorkspaceCacheMap();
+  if (!cacheMap[workspaceId]) return;
+  delete cacheMap[workspaceId];
+  writeWorkspaceCacheMap(cacheMap);
+}
+
+function restoreWorkspaceFromCache(workspaceId) {
+  if (!workspaceId) return false;
+  const cacheMap = readWorkspaceCacheMap();
+  const cached = cacheMap[workspaceId];
+  if (!cached || !cached.csvRows || !cached.taskRows) return false;
+
+  const parsed = parseCsvRowsData(cached.csvRows, cached.fileName);
+  if (!parsed) return false;
+
+  state.sync.applyingRemote = true;
+  setCurrentWorkspaceMeta({
+    id: workspaceId,
+    file_name: cached.fileName,
+    owner_name: cached.ownerName,
+    owner_client: cached.ownerClient
+  });
+  state.source = parsed.source;
+  state.fileName = parsed.fileName;
+  state.records = fromWorkspaceTaskRows(cached.taskRows);
+  state.originalRecords = cloneRecords(state.records);
+  if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
+  state.sync.applyingRemote = false;
+  renderAll();
+  setSyncStatus(`Restored workspace "${workspaceId}" from local cache while reconnecting.`, "connected");
+  return true;
 }
 
 function renderWorkspaceList() {
@@ -1209,6 +1273,13 @@ async function publishCurrentBoard() {
     owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
     owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId
   });
+  persistWorkspaceCache(workspaceId, {
+    fileName: state.fileName,
+    csvRows: state.source.rows,
+    taskRows: toWorkspaceTaskRows(state.records, workspaceId),
+    ownerName: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
+    ownerClient: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId
+  });
   await fetchAvailableWorkspaces();
 }
 
@@ -1233,6 +1304,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   if (!workspaceRow) {
     state.sync.workspaceId = "";
     persistWorkspaceSelection("");
+    clearWorkspaceCache(workspaceId);
     await loadDefaultCsv();
     if (!silent) setSyncStatus(`Workspace "${workspaceId}" does not exist yet. Publish a board first.`, "dirty");
     return;
@@ -1265,6 +1337,13 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   state.originalRecords = cloneRecords(state.records);
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
+  persistWorkspaceCache(workspaceId, {
+    fileName: parsed.fileName,
+    csvRows: workspaceRow.csv_rows,
+    taskRows: taskRows || [],
+    ownerName: workspaceRow.owner_name || "",
+    ownerClient: workspaceRow.owner_client || ""
+  });
   renderAll();
   changedTaskIds.forEach(flashRemoteTask);
   if (!silent) setSyncStatus(`Loaded workspace "${workspaceId}" with ${state.records.length} tasks.`, "connected");
@@ -1298,6 +1377,7 @@ async function deleteCurrentWorkspace() {
   persistWorkspaceSelection("");
   state.sync.workspaceId = "";
   state.selectedWorkspaceOption = "";
+  clearWorkspaceCache(workspaceId);
   closeWorkspaceMenu();
   await fetchAvailableWorkspaces();
   await loadDefaultCsv();
@@ -1335,6 +1415,13 @@ async function persistTaskToWorkspace(record) {
     return;
   }
 
+  persistWorkspaceCache(state.sync.workspaceId, {
+    fileName: state.fileName,
+    csvRows: state.source ? state.source.rows : [],
+    taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
+    ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
+    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : ""
+  });
   setSyncStatus(`Live sync connected to "${state.sync.workspaceId}". Last synced task: ${record.task}.`, "connected");
 }
 
@@ -1733,6 +1820,13 @@ async function confirmDeleteSelectedTask() {
   taskModal.hidden = true;
   state.taskDraft = null;
   state.taskModalMode = "edit";
+  persistWorkspaceCache(state.sync.workspaceId, {
+    fileName: state.fileName,
+    csvRows: state.source ? state.source.rows : [],
+    taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
+    ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
+    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : ""
+  });
   await deleteTaskFromWorkspace(record.id);
 }
 
@@ -2339,9 +2433,10 @@ async function init() {
   await connectSync();
   const preferredWorkspaceId = state.sync.workspaceId;
   if (state.user.name && preferredWorkspaceId) {
+    const restoredFromCache = restoreWorkspaceFromCache(preferredWorkspaceId);
     await activateWorkspace(preferredWorkspaceId, { loadExisting: true, notifyChanges: false });
     await fetchAvailableWorkspaces();
-    if (state.sync.workspaceId === preferredWorkspaceId) {
+    if (state.sync.workspaceId === preferredWorkspaceId && (state.records.length > 0 || restoredFromCache)) {
       return;
     }
   }
