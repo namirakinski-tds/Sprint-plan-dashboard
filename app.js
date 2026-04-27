@@ -397,13 +397,6 @@ function flashRemoteTask(recordId) {
 }
 
 function getPresenceForTask(taskId) {
-  const record = getRecord(taskId);
-  if (isTaskLockedByOther(record)) {
-    return {
-      name: getTaskEditorName(record),
-      clientId: record.editingByClient
-    };
-  }
   return state.taskPresence.remoteByTaskId.get(taskId) || null;
 }
 
@@ -1440,18 +1433,7 @@ function renderChips() {
     activeChips.appendChild(chip);
   });
 
-  const seenPresence = new Set();
-  state.records.forEach(record => {
-    if (!isTaskLockedByOther(record)) return;
-    seenPresence.add(record.id);
-    const chip = document.createElement("span");
-    chip.className = "chip";
-    chip.textContent = `${getTaskEditorName(record)} editing ${record.task}`;
-    activeChips.appendChild(chip);
-  });
-
   state.taskPresence.remoteByTaskId.forEach((presence, taskId) => {
-    if (seenPresence.has(taskId)) return;
     const record = getRecord(taskId);
     if (!record) return;
     const chip = document.createElement("span");
@@ -1539,7 +1521,7 @@ function taskBarHtml(task, colorMap) {
   const classes = [
     "task-bar",
     isAppAdded(task) ? "app-added" : "",
-    isTaskLockedByOther(task) ? "locked" : "",
+    getPresenceForTask(task.id) ? "locked" : "",
     isTaskDirty(task) ? "dirty" : "",
     state.remoteFlashTaskIds.has(task.id) ? "remote-flash" : "",
     task.id === state.selectedTaskId ? "selected" : ""
@@ -1582,8 +1564,9 @@ function openLockedTaskModal(recordId, lockedByName) {
 async function openTaskModal(recordId) {
   const record = getRecord(recordId);
   if (!record) return;
-  if (isTaskLockedByOther(record)) {
-    openLockedTaskModal(recordId, getTaskEditorName(record));
+  const livePresence = getPresenceForTask(recordId);
+  if (livePresence && livePresence.clientId !== state.user.clientId) {
+    openLockedTaskModal(recordId, livePresence.name || "A teammate");
     return;
   }
 
@@ -1800,9 +1783,10 @@ function startTaskPointerDrag(event, mode) {
   if (!bar) return;
   const record = getRecord(bar.dataset.taskId);
   if (!record) return;
-  if (isTaskLockedByOther(record)) {
+  const livePresence = getPresenceForTask(record.id);
+  if (livePresence && livePresence.clientId !== state.user.clientId) {
     event.preventDefault();
-    openLockedTaskModal(record.id, getTaskEditorName(record));
+    openLockedTaskModal(record.id, livePresence.name || "A teammate");
     return;
   }
   event.preventDefault();
