@@ -815,15 +815,16 @@
             <div class="workspace-menu-body">
               <div class="user-row">
                 <div>
-                  <div class="legend-note">Editing as</div>
+                  <div class="legend-note">Username</div>
                   <strong id="collaboratorName">Not set</strong>
                 </div>
-                <button class="action light" id="editIdentityBtn" type="button">Change name</button>
+                <button class="action light" id="editIdentityBtn" type="button">Change username</button>
               </div>
               <div class="workspace-menu-actions">
                 <button class="action light" id="switchWorkspaceBtn" type="button">Switch workspace</button>
                 <button class="action light" id="addTaskBtn" type="button">Add task</button>
                 <button class="action light" id="deleteWorkspaceBtn" type="button" hidden>Delete workspace</button>
+                <button class="action light" id="logoutBtn" type="button">Log out</button>
                 <button class="action light" id="undoChangesBtn">Undo CSV changes</button>
                 <button class="action dark" id="downloadBtn">Download CSV</button>
               </div>
@@ -858,10 +859,10 @@
   <div class="modal-backdrop" id="workspaceModalBackdrop"></div>
   <div class="modal-card">
     <div class="section-title">Get Started</div>
-    <div class="editor-title">Choose your name and workspace</div>
+    <div class="editor-title">Choose your username and workspace</div>
     <div class="editor-help">Supabase connects automatically in the background. Pick an existing workspace to collaborate together, or create a fresh one for a blank board.</div>
     <div class="field">
-      <label for="workspaceUserName">Your name</label>
+      <label for="workspaceUserName">Username</label>
       <input id="workspaceUserName" class="editor-input" type="text" maxlength="50" placeholder="Namira" />
     </div>
     <div class="workspace-split">
@@ -897,15 +898,15 @@
   <div class="modal-backdrop" id="identityModalBackdrop"></div>
   <div class="modal-card">
     <div class="section-title">Collaborator profile</div>
-    <div class="editor-title">Update the name your teammates see</div>
-    <div class="editor-help">This name is stored in your browser and attached to your live edits so other people can tell who changed what.</div>
+    <div class="editor-title">Update the username your teammates see</div>
+    <div class="editor-help">This username is stored in your browser on this computer and attached to your live edits so other people can tell who changed what.</div>
     <div class="field">
-      <label for="identityName">Your name</label>
+      <label for="identityName">Username</label>
       <input id="identityName" class="editor-input" type="text" maxlength="50" placeholder="Namira" />
     </div>
     <div class="identity-actions">
       <button class="action light" id="cancelIdentityBtn" type="button">Later</button>
-      <button class="action dark" id="saveIdentityBtn" type="button">Save name</button>
+      <button class="action dark" id="saveIdentityBtn" type="button">Save username</button>
     </div>
   </div>
 </div>

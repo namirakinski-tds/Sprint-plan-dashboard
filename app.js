@@ -126,7 +126,7 @@ function hydrateUserIdentity() {
   }
 
   state.user.clientId = stored && stored.clientId ? stored.clientId : createClientId();
-  state.user.name = stored && stored.name ? String(stored.name).trim() : "";
+  state.user.name = stored && (stored.username || stored.name) ? String(stored.username || stored.name).trim() : "";
   renderIdentity();
   persistUserIdentity(state.user.name);
 }
@@ -135,10 +135,30 @@ function persistUserIdentity(name) {
   state.user.name = String(name || "").trim();
   if (!state.user.clientId) state.user.clientId = createClientId();
   localStorage.setItem(userStorageKey, JSON.stringify({
-    name: state.user.name,
+    username: state.user.name,
     clientId: state.user.clientId
   }));
   renderIdentity();
+}
+
+async function logoutUser() {
+  if (!window.confirm("Log out from this browser on this computer? Your username will be cleared until you enter it again.")) {
+    return;
+  }
+
+  if (!taskModal.hidden) await closeTaskModal();
+  await clearLocalTaskPresence();
+  localStorage.removeItem(userStorageKey);
+  sessionStorage.removeItem(workspaceStorageKey);
+  updateWorkspaceLocation("");
+  state.user.name = "";
+  state.sync.workspaceId = "";
+  state.selectedWorkspaceOption = "";
+  state.currentWorkspace = null;
+  renderIdentity();
+  await loadDefaultCsv();
+  openWorkspaceModal();
+  openIdentityModal(true);
 }
 
 function renderIdentity() {
@@ -365,7 +385,7 @@ async function submitJoinWorkspace() {
   const name = workspaceUserNameInput.value.trim();
   const workspaceId = state.selectedWorkspaceOption;
   if (!name) {
-    setWorkspaceModalNote("Add your name before joining a workspace.", "error");
+    setWorkspaceModalNote("Add your username before joining a workspace.", "error");
     workspaceUserNameInput.focus();
     return;
   }
@@ -382,7 +402,7 @@ async function submitCreateWorkspace() {
   const name = workspaceUserNameInput.value.trim();
   const workspaceId = newWorkspaceIdInput.value.trim();
   if (!name) {
-    setWorkspaceModalNote("Add your name before creating a workspace.", "error");
+    setWorkspaceModalNote("Add your username before creating a workspace.", "error");
     workspaceUserNameInput.focus();
     return;
   }
@@ -438,7 +458,7 @@ function saveIdentityFromInput() {
 function ensureUserIdentity() {
   if (state.user.name) return true;
   openIdentityModal(true);
-  setSyncStatus("Add your name before connecting so teammates can see who changed what.", "dirty");
+  setSyncStatus("Add your username before connecting so teammates can see who changed what.", "dirty");
   return false;
 }
 
@@ -2391,6 +2411,10 @@ function bindEvents() {
   document.getElementById("deleteWorkspaceBtn").addEventListener("click", async () => {
     closeWorkspaceMenu();
     await deleteCurrentWorkspace();
+  });
+  document.getElementById("logoutBtn").addEventListener("click", async () => {
+    closeWorkspaceMenu();
+    await logoutUser();
   });
   document.getElementById("addTaskBtn").addEventListener("click", () => {
     closeWorkspaceMenu();
