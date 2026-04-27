@@ -178,11 +178,11 @@ function openIdentityModal(forceFocus) {
 }
 
 function persistWorkspaceSelection(workspaceId) {
-  localStorage.setItem(workspaceStorageKey, workspaceId || "");
+  sessionStorage.setItem(workspaceStorageKey, workspaceId || "");
 }
 
 function hydrateWorkspaceSelection() {
-  const stored = localStorage.getItem(workspaceStorageKey);
+  const stored = sessionStorage.getItem(workspaceStorageKey);
   if (stored) {
     state.sync.workspaceId = stored.trim();
   }
@@ -2324,15 +2324,16 @@ async function init() {
   hydrateWorkspaceSelection();
   bindEvents();
   await connectSync();
-  await fetchAvailableWorkspaces();
-  await loadDefaultCsv();
-  if (state.user.name && state.sync.workspaceId) {
-    const known = state.availableWorkspaces.some(workspace => workspace.id === state.sync.workspaceId);
-    if (known) {
-      await activateWorkspace(state.sync.workspaceId, { loadExisting: true, notifyChanges: false });
+  const preferredWorkspaceId = state.sync.workspaceId;
+  if (state.user.name && preferredWorkspaceId) {
+    await activateWorkspace(preferredWorkspaceId, { loadExisting: true, notifyChanges: false });
+    await fetchAvailableWorkspaces();
+    if (state.sync.workspaceId === preferredWorkspaceId) {
       return;
     }
   }
+  await fetchAvailableWorkspaces();
+  await loadDefaultCsv();
   openWorkspaceModal();
 }
 

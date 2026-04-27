@@ -110,7 +110,8 @@
     border: 1px solid var(--line);
     border-radius: 16px;
     background: #fafafa;
-    overflow: hidden;
+    overflow: visible;
+    position: relative;
   }
   .menu-card summary {
     list-style: none;
@@ -142,9 +143,21 @@
   }
   .menu-card[open] .menu-chevron { transform: rotate(180deg); }
   .menu-body {
-    border-top: 1px solid var(--line);
+    position: absolute;
+    top: calc(100% + 10px);
+    left: 0;
+    width: min(420px, calc(100vw - 48px));
+    max-height: min(70vh, 720px);
+    overflow: auto;
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: white;
+    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
     padding: 0 16px 16px 16px;
+    z-index: 85;
   }
+  .menu-card[open] .menu-body { display: block; }
+  .menu-body .field:first-child { margin-top: 16px; }
   .search, .upload, .editor-input {
     width: 100%;
     min-height: 42px;
