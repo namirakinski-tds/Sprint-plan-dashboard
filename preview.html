@@ -66,6 +66,46 @@
   .segmented button.active { background: white; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
   .field { margin-top: 16px; }
   .field label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .menu-card {
+    margin-top: 16px;
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: #fafafa;
+    overflow: hidden;
+  }
+  .menu-card summary {
+    list-style: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    cursor: pointer;
+    padding: 14px 16px;
+  }
+  .menu-card summary::-webkit-details-marker { display: none; }
+  .menu-title {
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+  }
+  .menu-meta {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .menu-chevron {
+    flex: 0 0 auto;
+    font-size: 18px;
+    color: var(--muted);
+    transition: transform .18s ease;
+  }
+  .menu-card[open] .menu-chevron { transform: rotate(180deg); }
+  .menu-body {
+    border-top: 1px solid var(--line);
+    padding: 0 16px 16px 16px;
+  }
   .search, .upload, .editor-input {
     width: 100%;
     min-height: 42px;
@@ -550,46 +590,62 @@
         </div>
       </div>
 
-      <div class="field">
-        <label for="deptSearch">Department</label>
-        <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
-        <div class="row">
-          <button class="action light" id="deptAll">Select all</button>
-          <button class="action light" id="deptClear">Clear</button>
-        </div>
-        <div id="deptList" class="listbox"></div>
-      </div>
+      <details class="menu-card" id="filtersMenu">
+        <summary>
+          <div>
+            <div class="menu-title">Filters</div>
+            <div class="menu-meta">Department, epic, assignee, and empty-row controls</div>
+          </div>
+          <div class="menu-chevron">⌄</div>
+        </summary>
+        <div class="menu-body">
+          <div class="field">
+            <label for="deptSearch">Department</label>
+            <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
+            <div class="row">
+              <button class="action light" id="deptAll">Select all</button>
+              <button class="action light" id="deptClear">Clear</button>
+            </div>
+            <div id="deptList" class="listbox"></div>
+          </div>
 
-      <div class="field">
-        <label for="epicSearch">Epic</label>
-        <input id="epicSearch" class="search" type="text" placeholder="Search epics..." />
-        <div class="row">
-          <button class="action light" id="epicAll">Select all</button>
-          <button class="action light" id="epicClear">Clear</button>
-        </div>
-        <div id="epicList" class="listbox"></div>
-      </div>
+          <div class="field">
+            <label for="epicSearch">Epic</label>
+            <input id="epicSearch" class="search" type="text" placeholder="Search epics..." />
+            <div class="row">
+              <button class="action light" id="epicAll">Select all</button>
+              <button class="action light" id="epicClear">Clear</button>
+            </div>
+            <div id="epicList" class="listbox"></div>
+          </div>
 
-      <div class="field">
-        <label for="assigneeSearch">Assignee</label>
-        <input id="assigneeSearch" class="search" type="text" placeholder="Search assignees..." />
-        <div class="row">
-          <button class="action light" id="assigneeAll">Select all</button>
-          <button class="action light" id="assigneeClear">Clear</button>
-        </div>
-        <div id="assigneeList" class="listbox"></div>
-      </div>
+          <div class="field">
+            <label for="assigneeSearch">Assignee</label>
+            <input id="assigneeSearch" class="search" type="text" placeholder="Search assignees..." />
+            <div class="row">
+              <button class="action light" id="assigneeAll">Select all</button>
+              <button class="action light" id="assigneeClear">Clear</button>
+            </div>
+            <div id="assigneeList" class="listbox"></div>
+          </div>
 
-      <div class="field">
-        <div class="section-title">Display</div>
-        <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
-      </div>
+          <div class="field">
+            <div class="section-title">Display</div>
+            <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
+          </div>
+
+          <div class="row">
+            <button class="action light" id="resetFiltersBtn">Reset filters</button>
+          </div>
+        </div>
+      </details>
 
       <div class="row">
-        <button class="action light" id="resetFiltersBtn">Reset filters</button>
         <button class="action light" id="undoChangesBtn">Undo CSV changes</button>
         <button class="action dark" id="downloadBtn">Download CSV</button>
       </div>
+
+      <div id="activeChips" class="chips"></div>
 
       <div class="field">
         <div class="section-title">Live Sync</div>
@@ -616,8 +672,6 @@
 
       <div id="changeStatus" class="status-banner">Upload a CSV to start editing the planning board.</div>
       <div id="syncStatus" class="status-banner">Live sync is off. Connect to Supabase to share edits with the team.</div>
-
-      <div id="activeChips" class="chips"></div>
     </div>
 
     <div class="board-card">
