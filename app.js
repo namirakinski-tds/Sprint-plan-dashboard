@@ -20,6 +20,8 @@ const state = {
     name: "",
     clientId: ""
   },
+  selectedWorkspaceOption: "",
+  availableWorkspaces: [],
   remoteToasts: [],
   remoteFlashTaskIds: new Set(),
   sync: {
@@ -63,20 +65,24 @@ const summary = document.getElementById("summary");
 const csvFile = document.getElementById("csvFile");
 const changeStatus = document.getElementById("changeStatus");
 const syncStatus = document.getElementById("syncStatus");
-const supabaseUrlInput = document.getElementById("supabaseUrl");
-const supabaseAnonKeyInput = document.getElementById("supabaseAnonKey");
-const workspaceIdInput = document.getElementById("workspaceId");
 const taskModal = document.getElementById("taskModal");
 const taskModalContent = document.getElementById("taskModalContent");
 const taskModalBackdrop = document.getElementById("taskModalBackdrop");
 const collaboratorName = document.getElementById("collaboratorName");
+const currentWorkspaceLabel = document.getElementById("currentWorkspaceLabel");
 const remoteToastStack = document.getElementById("remoteToastStack");
+const workspaceModal = document.getElementById("workspaceModal");
+const workspaceModalBackdrop = document.getElementById("workspaceModalBackdrop");
+const workspaceUserNameInput = document.getElementById("workspaceUserName");
+const workspaceList = document.getElementById("workspaceList");
+const newWorkspaceIdInput = document.getElementById("newWorkspaceId");
+const workspaceModalNote = document.getElementById("workspaceModalNote");
 const identityModal = document.getElementById("identityModal");
 const identityModalBackdrop = document.getElementById("identityModalBackdrop");
 const identityNameInput = document.getElementById("identityName");
 
-const syncStorageKey = "planning-viewer-supabase-config";
 const userStorageKey = "planning-viewer-user";
+const workspaceStorageKey = "planning-viewer-workspace";
 const defaultSyncConfig = {
   url: "https://xbzvlwbmdtqwdzoxnnxa.supabase.co",
   anonKey: "sb_publishable_qDXHe21m5T_OP0urEu95EA_5WBxqOYs",
@@ -122,6 +128,8 @@ function persistUserIdentity(name) {
 function renderIdentity() {
   collaboratorName.textContent = state.user.name || "Not set";
   identityNameInput.value = state.user.name;
+  workspaceUserNameInput.value = state.user.name;
+  currentWorkspaceLabel.textContent = state.sync.workspaceId || "Not selected";
 }
 
 function openIdentityModal(forceFocus) {
@@ -130,6 +138,132 @@ function openIdentityModal(forceFocus) {
   if (forceFocus) {
     window.setTimeout(() => identityNameInput.focus(), 30);
   }
+}
+
+function persistWorkspaceSelection(workspaceId) {
+  localStorage.setItem(workspaceStorageKey, workspaceId || "");
+}
+
+function hydrateWorkspaceSelection() {
+  const stored = localStorage.getItem(workspaceStorageKey);
+  if (stored) {
+    state.sync.workspaceId = stored.trim();
+  }
+  renderIdentity();
+}
+
+function renderWorkspaceList() {
+  if (!state.availableWorkspaces.length) {
+    workspaceList.innerHTML = '<div class="editor-help">No published workspaces yet. Create one to start the shared board.</div>';
+    return;
+  }
+
+  workspaceList.innerHTML = state.availableWorkspaces.map(workspace => `
+    <button class="workspace-option ${workspace.id === state.selectedWorkspaceOption ? "active" : ""}" type="button" data-workspace-option="${escapeHtml(workspace.id)}">
+      <div class="workspace-name">${escapeHtml(workspace.id)}</div>
+      <div class="workspace-meta">${escapeHtml(workspace.file_name || "Shared planning board")}</div>
+      <div class="workspace-meta">Updated ${escapeHtml(new Date(workspace.updated_at).toLocaleString("en-GB"))}</div>
+    </button>
+  `).join("");
+
+  workspaceList.querySelectorAll("[data-workspace-option]").forEach(button => {
+    button.addEventListener("click", () => {
+      state.selectedWorkspaceOption = button.dataset.workspaceOption || "";
+      renderWorkspaceList();
+    });
+  });
+}
+
+function setWorkspaceModalNote(message, tone = "info") {
+  workspaceModalNote.textContent = message;
+  workspaceModalNote.style.background = tone === "error" ? "#fef2f2" : "#eff6ff";
+  workspaceModalNote.style.color = tone === "error" ? "#b91c1c" : "#1d4ed8";
+}
+
+function openWorkspaceModal() {
+  workspaceModal.hidden = false;
+  workspaceUserNameInput.value = state.user.name;
+  newWorkspaceIdInput.value = "";
+  state.selectedWorkspaceOption = state.sync.workspaceId || state.selectedWorkspaceOption || (state.availableWorkspaces[0] ? state.availableWorkspaces[0].id : "");
+  renderWorkspaceList();
+  setWorkspaceModalNote(state.availableWorkspaces.length
+    ? "Pick an existing workspace or create a new one."
+    : "No shared workspaces found yet. Create a new one to begin.");
+}
+
+function closeWorkspaceModal() {
+  workspaceModal.hidden = true;
+}
+
+async function fetchAvailableWorkspaces() {
+  if (!state.sync.client) return [];
+  const { data, error } = await state.sync.client
+    .from("planning_workspaces")
+    .select("id, file_name, updated_at")
+    .order("updated_at", { ascending: false });
+
+  if (error) {
+    setWorkspaceModalNote(`Could not load workspaces: ${error.message}`, "error");
+    return [];
+  }
+
+  state.availableWorkspaces = data || [];
+  if (!state.selectedWorkspaceOption && state.availableWorkspaces[0]) {
+    state.selectedWorkspaceOption = state.availableWorkspaces[0].id;
+  }
+  renderWorkspaceList();
+  return state.availableWorkspaces;
+}
+
+async function activateWorkspace(workspaceId, options = {}) {
+  const { loadExisting = true, notifyChanges = false } = options;
+  state.sync.workspaceId = workspaceId;
+  state.selectedWorkspaceOption = workspaceId;
+  persistWorkspaceSelection(workspaceId);
+  renderIdentity();
+  subscribeToWorkspace(workspaceId);
+
+  if (loadExisting) {
+    await loadWorkspaceFromRemote(false, notifyChanges);
+  } else {
+    await loadDefaultCsv();
+    setSyncStatus(`Workspace "${workspaceId}" is ready. Upload a CSV, then publish when you want to share it.`, "connected");
+  }
+}
+
+async function submitJoinWorkspace() {
+  const name = workspaceUserNameInput.value.trim();
+  const workspaceId = state.selectedWorkspaceOption;
+  if (!name) {
+    setWorkspaceModalNote("Add your name before joining a workspace.", "error");
+    workspaceUserNameInput.focus();
+    return;
+  }
+  if (!workspaceId) {
+    setWorkspaceModalNote("Choose an existing workspace first.", "error");
+    return;
+  }
+  persistUserIdentity(name);
+  await activateWorkspace(workspaceId, { loadExisting: true, notifyChanges: false });
+  closeWorkspaceModal();
+}
+
+async function submitCreateWorkspace() {
+  const name = workspaceUserNameInput.value.trim();
+  const workspaceId = newWorkspaceIdInput.value.trim();
+  if (!name) {
+    setWorkspaceModalNote("Add your name before creating a workspace.", "error");
+    workspaceUserNameInput.focus();
+    return;
+  }
+  if (!workspaceId) {
+    setWorkspaceModalNote("Enter a workspace ID to create a new board.", "error");
+    newWorkspaceIdInput.focus();
+    return;
+  }
+  persistUserIdentity(name);
+  await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false });
+  closeWorkspaceModal();
 }
 
 function closeIdentityModal() {
@@ -204,35 +338,11 @@ function cloneRows(rows) {
   return rows.map(row => [...row]);
 }
 
-function persistSyncInputs() {
-  localStorage.setItem(syncStorageKey, JSON.stringify({
-    url: supabaseUrlInput.value.trim(),
-    anonKey: supabaseAnonKeyInput.value.trim(),
-    workspaceId: workspaceIdInput.value.trim()
-  }));
-}
-
-function hydrateSyncInputs() {
-  supabaseUrlInput.value = defaultSyncConfig.url;
-  supabaseAnonKeyInput.value = defaultSyncConfig.anonKey;
-  workspaceIdInput.value = defaultSyncConfig.workspaceId;
-  try {
-    const raw = localStorage.getItem(syncStorageKey);
-    if (!raw) return;
-    const config = JSON.parse(raw);
-    supabaseUrlInput.value = config.url || defaultSyncConfig.url;
-    supabaseAnonKeyInput.value = config.anonKey || defaultSyncConfig.anonKey;
-    workspaceIdInput.value = config.workspaceId || defaultSyncConfig.workspaceId;
-  } catch (_error) {
-    localStorage.removeItem(syncStorageKey);
-  }
-}
-
-function getSyncConfigFromInputs() {
+function getSyncConfig() {
   return {
-    url: supabaseUrlInput.value.trim(),
-    anonKey: supabaseAnonKeyInput.value.trim(),
-    workspaceId: workspaceIdInput.value.trim()
+    url: defaultSyncConfig.url,
+    anonKey: defaultSyncConfig.anonKey,
+    workspaceId: state.sync.workspaceId || defaultSyncConfig.workspaceId
   };
 }
 
@@ -651,9 +761,8 @@ function clearSyncChannel() {
 function disconnectSync() {
   clearSyncChannel();
   state.sync.client = null;
-  state.sync.workspaceId = "";
   state.sync.connected = false;
-  setSyncStatus("Live sync is off. Connect to Supabase to share edits with the team.");
+  setSyncStatus("Live sync is temporarily unavailable.", "dirty");
 }
 
 function hasSupabaseSdk() {
@@ -661,26 +770,20 @@ function hasSupabaseSdk() {
 }
 
 async function connectSync() {
-  const config = getSyncConfigFromInputs();
-  persistSyncInputs();
-
-  if (!ensureUserIdentity()) return;
-
+  const config = getSyncConfig();
   if (!hasSupabaseSdk()) {
     setSyncStatus("Supabase client library is not available in this browser session.", "dirty");
     return;
   }
-  if (!config.url || !config.anonKey || !config.workspaceId) {
-    setSyncStatus("Fill in Supabase URL, publishable key, and workspace ID first.", "dirty");
+  if (!config.url || !config.anonKey) {
+    setSyncStatus("Supabase is missing its background configuration.", "dirty");
     return;
   }
 
   clearSyncChannel();
   state.sync.client = window.supabase.createClient(config.url, config.anonKey);
-  state.sync.workspaceId = config.workspaceId;
   state.sync.connected = true;
-  subscribeToWorkspace(config.workspaceId);
-  setSyncStatus(`Connected to workspace "${config.workspaceId}".`, "connected");
+  setSyncStatus("Live sync is ready in the background. Choose a workspace to start collaborating.", "connected");
 }
 
 function scheduleRemoteRefresh() {
@@ -714,7 +817,7 @@ function subscribeToWorkspace(workspaceId) {
 
 async function publishCurrentBoard() {
   if (!state.sync.connected || !state.sync.client || !state.sync.workspaceId) {
-    setSyncStatus("Connect to Supabase before publishing the workspace.", "dirty");
+    setSyncStatus("Choose a workspace before publishing the board.", "dirty");
     return;
   }
   if (!state.source || state.records.length === 0) {
@@ -757,11 +860,12 @@ async function publishCurrentBoard() {
   }
 
   setSyncStatus(`Published ${state.records.length} tasks to workspace "${workspaceId}".`, "connected");
+  await fetchAvailableWorkspaces();
 }
 
 async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   if (!state.sync.connected || !state.sync.client || !state.sync.workspaceId) {
-    if (!silent) setSyncStatus("Connect to Supabase before loading a workspace.", "dirty");
+    if (!silent) setSyncStatus("Choose a workspace before loading shared data.", "dirty");
     return;
   }
 
@@ -1513,9 +1617,6 @@ function bindEvents() {
   deptSearch.addEventListener("input", renderOptions);
   epicSearch.addEventListener("input", renderOptions);
   assigneeSearch.addEventListener("input", renderOptions);
-  supabaseUrlInput.addEventListener("change", persistSyncInputs);
-  supabaseAnonKeyInput.addEventListener("change", persistSyncInputs);
-  workspaceIdInput.addEventListener("change", persistSyncInputs);
 
   document.getElementById("deptAll").addEventListener("click", () => { getDepartments().forEach(value => state.selectedDepartments.add(value)); renderAll(); });
   document.getElementById("deptClear").addEventListener("click", () => { state.selectedDepartments.clear(); renderAll(); });
@@ -1536,10 +1637,12 @@ function bindEvents() {
   document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
   document.getElementById("undoChangesBtn").addEventListener("click", resetChanges);
   document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
-  document.getElementById("connectSyncBtn").addEventListener("click", connectSync);
-  document.getElementById("disconnectSyncBtn").addEventListener("click", disconnectSync);
   document.getElementById("publishWorkspaceBtn").addEventListener("click", publishCurrentBoard);
   document.getElementById("loadWorkspaceBtn").addEventListener("click", () => loadWorkspaceFromRemote(false, false));
+  document.getElementById("switchWorkspaceBtn").addEventListener("click", async () => {
+    await fetchAvailableWorkspaces();
+    openWorkspaceModal();
+  });
   taskModalBackdrop.addEventListener("click", closeTaskModal);
   document.getElementById("editIdentityBtn").addEventListener("click", () => openIdentityModal(true));
   document.getElementById("saveIdentityBtn").addEventListener("click", saveIdentityFromInput);
@@ -1548,14 +1651,34 @@ function bindEvents() {
   identityNameInput.addEventListener("keydown", event => {
     if (event.key === "Enter") saveIdentityFromInput();
   });
+  workspaceModalBackdrop.addEventListener("click", () => {
+    if (state.sync.workspaceId) closeWorkspaceModal();
+  });
+  document.getElementById("joinWorkspaceBtn").addEventListener("click", submitJoinWorkspace);
+  document.getElementById("createWorkspaceBtn").addEventListener("click", submitCreateWorkspace);
+  workspaceUserNameInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") submitJoinWorkspace();
+  });
+  newWorkspaceIdInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") submitCreateWorkspace();
+  });
 }
 
 async function init() {
   hydrateUserIdentity();
-  hydrateSyncInputs();
+  hydrateWorkspaceSelection();
   bindEvents();
+  await connectSync();
+  await fetchAvailableWorkspaces();
   await loadDefaultCsv();
-  if (!state.user.name) openIdentityModal(false);
+  if (state.user.name && state.sync.workspaceId) {
+    const known = state.availableWorkspaces.some(workspace => workspace.id === state.sync.workspaceId);
+    if (known) {
+      await activateWorkspace(state.sync.workspaceId, { loadExisting: true, notifyChanges: false });
+      return;
+    }
+  }
+  openWorkspaceModal();
 }
 
 init();
