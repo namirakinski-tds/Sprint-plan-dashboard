@@ -14,6 +14,8 @@ const state = {
   records: [],
   originalRecords: [],
   selectedTaskId: null,
+  taskModalMode: "edit",
+  taskDraft: null,
   source: null,
   fileName: "planning-viewer.csv",
   user: {
@@ -24,6 +26,12 @@ const state = {
   availableWorkspaces: [],
   remoteToasts: [],
   remoteFlashTaskIds: new Set(),
+  taskPresence: {
+    localTaskId: "",
+    localTimer: null,
+    remoteByTaskId: new Map(),
+    expiryTimers: new Map()
+  },
   sync: {
     client: null,
     channel: null,
@@ -40,6 +48,8 @@ const dragState = {
   recordId: null,
   startX: 0,
   startY: 0,
+  lastX: 0,
+  lastY: 0,
   startDate: null,
   endDate: null,
   originalAssignee: null,
@@ -70,6 +80,7 @@ const taskModalBackdrop = document.getElementById("taskModalBackdrop");
 const collaboratorName = document.getElementById("collaboratorName");
 const currentWorkspaceLabel = document.getElementById("currentWorkspaceLabel");
 const remoteToastStack = document.getElementById("remoteToastStack");
+const workspaceMenu = document.getElementById("workspaceMenu");
 const workspaceModal = document.getElementById("workspaceModal");
 const workspaceModalBackdrop = document.getElementById("workspaceModalBackdrop");
 const workspaceUserNameInput = document.getElementById("workspaceUserName");
@@ -218,6 +229,7 @@ async function fetchAvailableWorkspaces() {
 
 async function activateWorkspace(workspaceId, options = {}) {
   const { loadExisting = true, notifyChanges = false, parsedData = null } = options;
+  await clearLocalTaskPresence();
   state.sync.workspaceId = workspaceId;
   state.selectedWorkspaceOption = workspaceId;
   persistWorkspaceSelection(workspaceId);
@@ -287,6 +299,10 @@ function closeIdentityModal() {
   identityModal.hidden = true;
 }
 
+function closeWorkspaceMenu() {
+  if (workspaceMenu) workspaceMenu.open = false;
+}
+
 function saveIdentityFromInput() {
   const name = identityNameInput.value.trim();
   if (!name) {
@@ -335,6 +351,93 @@ function flashRemoteTask(recordId) {
   }, 1800);
 }
 
+function getPresenceForTask(taskId) {
+  return state.taskPresence.remoteByTaskId.get(taskId) || null;
+}
+
+function clearPresenceExpiry(taskId) {
+  const timer = state.taskPresence.expiryTimers.get(taskId);
+  if (timer) {
+    clearTimeout(timer);
+    state.taskPresence.expiryTimers.delete(taskId);
+  }
+}
+
+function removeRemotePresence(taskId) {
+  if (!state.taskPresence.remoteByTaskId.has(taskId)) return;
+  clearPresenceExpiry(taskId);
+  state.taskPresence.remoteByTaskId.delete(taskId);
+  renderView();
+}
+
+function upsertRemotePresence(payload) {
+  if (!payload || !payload.taskId || payload.clientId === state.user.clientId) return;
+  clearPresenceExpiry(payload.taskId);
+
+  if (!payload.active) {
+    removeRemotePresence(payload.taskId);
+    return;
+  }
+
+  state.taskPresence.remoteByTaskId.set(payload.taskId, {
+    name: payload.name || "A teammate",
+    clientId: payload.clientId
+  });
+  const expiry = window.setTimeout(() => {
+    removeRemotePresence(payload.taskId);
+  }, 7000);
+  state.taskPresence.expiryTimers.set(payload.taskId, expiry);
+  renderView();
+}
+
+function handlePresenceBroadcast(message) {
+  upsertRemotePresence(message && message.payload ? message.payload : null);
+}
+
+async function broadcastTaskPresence(taskId, active) {
+  if (!state.sync.channel || !state.sync.connected || !state.sync.workspaceId || !taskId) return;
+  try {
+    await state.sync.channel.send({
+      type: "broadcast",
+      event: "task-presence",
+      payload: {
+        taskId,
+        active,
+        name: state.user.name,
+        clientId: state.user.clientId,
+        workspaceId: state.sync.workspaceId
+      }
+    });
+  } catch (_error) {
+    // Ignore presence broadcast failures so they never block editing.
+  }
+}
+
+async function setLocalTaskPresence(taskId) {
+  if (!taskId) return;
+  if (state.taskPresence.localTaskId && state.taskPresence.localTaskId !== taskId) {
+    await clearLocalTaskPresence();
+  }
+  state.taskPresence.localTaskId = taskId;
+  await broadcastTaskPresence(taskId, true);
+  if (state.taskPresence.localTimer) clearInterval(state.taskPresence.localTimer);
+  state.taskPresence.localTimer = window.setInterval(() => {
+    broadcastTaskPresence(taskId, true);
+  }, 4000);
+}
+
+async function clearLocalTaskPresence() {
+  const currentTaskId = state.taskPresence.localTaskId;
+  if (state.taskPresence.localTimer) {
+    clearInterval(state.taskPresence.localTimer);
+    state.taskPresence.localTimer = null;
+  }
+  state.taskPresence.localTaskId = "";
+  if (currentTaskId) {
+    await broadcastTaskPresence(currentTaskId, false);
+  }
+}
+
 function escapeHtml(value) {
   return String(value)
     .replaceAll("&", "&amp;")
@@ -353,6 +456,38 @@ function cloneRecords(records) {
 
 function cloneRows(rows) {
   return rows.map(row => [...row]);
+}
+
+function createTaskDraft(record) {
+  return {
+    department: normalizeLabel(record.department),
+    epic: String(record.epic || "").trim(),
+    task: String(record.task || "").trim(),
+    assignee: normalizeLabel(record.assignee),
+    start: record.start,
+    end: record.end,
+    workingDays: record.days ? record.days.length : Math.max(1, dateRangeBusiness(record.start, record.end).length)
+  };
+}
+
+function getDefaultTaskDraft() {
+  const dateCols = getDateCols();
+  const start = dateCols[0] || normalizeBusinessDate(formatIsoDate(new Date()), "forward") || formatIsoDate(new Date());
+  const selectedDepartment = state.selectedDepartments.size === 1 ? [...state.selectedDepartments][0] : "";
+  const selectedEpic = state.selectedEpics.size === 1 ? [...state.selectedEpics][0] : "";
+  const selectedAssignee = state.selectedAssignees.size === 1 ? [...state.selectedAssignees][0] : "";
+  const department = selectedDepartment || getDepartments()[0] || "-";
+  const epic = selectedEpic || getEpics()[0] || "New epic";
+  const assignee = selectedAssignee || getAssignees()[0] || "-";
+  return {
+    department,
+    epic,
+    task: "",
+    assignee,
+    start,
+    end: start,
+    workingDays: 1
+  };
 }
 
 function getSyncConfig() {
@@ -660,14 +795,22 @@ function getRecord(recordId) {
   return state.records.find(record => record.id === recordId) || null;
 }
 
+function isAppAdded(record) {
+  return Boolean(record && String(record.id).startsWith("app-"));
+}
+
 function isTaskDirty(record) {
-  const original = getOriginalRecord(record.id) || record;
-  if (!original) return false;
+  const original = getOriginalRecord(record.id);
+  if (!original) return true;
   return record.assignee !== original.assignee || record.start !== original.start || record.end !== original.end;
 }
 
 function getDirtyRecords() {
   return state.records.filter(isTaskDirty);
+}
+
+function getDeletedOriginalCount() {
+  return state.originalRecords.filter(record => !getRecord(record.id)).length;
 }
 
 function toWorkspaceTaskRows(records, workspaceId) {
@@ -775,7 +918,8 @@ function clearSyncChannel() {
   }
 }
 
-function disconnectSync() {
+async function disconnectSync() {
+  await clearLocalTaskPresence();
   clearSyncChannel();
   state.sync.client = null;
   state.sync.connected = false;
@@ -814,6 +958,7 @@ function scheduleRemoteRefresh() {
 function subscribeToWorkspace(workspaceId) {
   if (!state.sync.client) return;
   clearSyncChannel();
+  state.taskPresence.remoteByTaskId.clear();
 
   state.sync.channel = state.sync.client
     .channel(`planning-workspace:${workspaceId}`)
@@ -829,6 +974,7 @@ function subscribeToWorkspace(workspaceId) {
       table: "planning_workspaces",
       filter: `id=eq.${workspaceId}`
     }, scheduleRemoteRefresh)
+    .on("broadcast", { event: "task-presence" }, handlePresenceBroadcast)
     .subscribe();
 }
 
@@ -838,7 +984,7 @@ async function publishCurrentBoard() {
     return;
   }
   if (!state.source || state.records.length === 0) {
-    setSyncStatus("Upload a CSV before publishing a shared workspace.", "dirty");
+    setSyncStatus("Create a workspace with its CSV before publishing shared data.", "dirty");
     return;
   }
 
@@ -1071,6 +1217,15 @@ function renderChips() {
     chip.textContent = `Assignee: ${value}`;
     activeChips.appendChild(chip);
   });
+
+  state.taskPresence.remoteByTaskId.forEach((presence, taskId) => {
+    const record = getRecord(taskId);
+    if (!record) return;
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `${presence.name} editing ${record.task}`;
+    activeChips.appendChild(chip);
+  });
 }
 
 function dayHeader(dateStr) {
@@ -1150,13 +1305,17 @@ function taskBarHtml(task, colorMap) {
     : `${escapeHtml(task.assignee)} • ${escapeHtml(task.start)} to ${escapeHtml(task.end)}`;
   const classes = [
     "task-bar",
+    isAppAdded(task) ? "app-added" : "",
     isTaskDirty(task) ? "dirty" : "",
     state.remoteFlashTaskIds.has(task.id) ? "remote-flash" : "",
     task.id === state.selectedTaskId ? "selected" : ""
   ].filter(Boolean).join(" ");
   const dirtyMark = isTaskDirty(task) ? '<span class="task-dirty-mark"></span>' : "";
+  const appAddedMark = isAppAdded(task) ? '<span class="task-app-mark">New</span>' : "";
+  const presence = getPresenceForTask(task.id);
+  const presenceHtml = presence ? `<div class="task-presence-pill">${escapeHtml(presence.name)} is editing</div>` : "";
 
-  return `<div class="${classes}" data-task-id="${escapeHtml(task.id)}" style="left:${left}px; width:${width}px; top:${top}px; background:${color};" title="${escapeHtml(`${task.task} | ${sub}`)}"><span class="resize-handle left" data-handle="start"></span><span class="resize-handle right" data-handle="end"></span>${dirtyMark}<div class="task-title">${escapeHtml(task.task)}</div><div class="task-sub">${sub}</div></div>`;
+  return `<div class="${classes}" data-task-id="${escapeHtml(task.id)}" style="left:${left}px; width:${width}px; top:${top}px; background:${color};" title="${escapeHtml(`${task.task} | ${sub}`)}">${presenceHtml}<span class="resize-handle left" data-handle="start"></span><span class="resize-handle right" data-handle="end"></span>${dirtyMark}${appAddedMark}<div class="task-title">${escapeHtml(task.task)}</div><div class="task-sub">${sub}</div></div>`;
 }
 
 function syncTaskBarVisual(record, element, mode) {
@@ -1177,19 +1336,139 @@ function clearDragVisuals(element) {
 }
 
 function openTaskModal(recordId) {
+  const record = getRecord(recordId);
+  if (!record) return;
   state.selectedTaskId = recordId;
+  state.taskModalMode = "edit";
+  state.taskDraft = createTaskDraft(record);
+  setLocalTaskPresence(recordId);
+  renderTaskModal();
+  taskModal.hidden = false;
+}
+
+function openCreateTaskModal() {
+  state.selectedTaskId = null;
+  state.taskModalMode = "create";
+  state.taskDraft = getDefaultTaskDraft();
   renderTaskModal();
   taskModal.hidden = false;
 }
 
 function closeTaskModal() {
   taskModal.hidden = true;
+  state.taskDraft = null;
+  state.taskModalMode = "edit";
+  clearLocalTaskPresence();
+}
+
+async function deleteTaskFromWorkspace(recordId) {
+  if (!recordId || !state.sync.connected || !state.sync.client || !state.sync.workspaceId || state.sync.applyingRemote) {
+    return;
+  }
+
+  const { error } = await state.sync.client
+    .from("planning_tasks")
+    .delete()
+    .eq("workspace_id", state.sync.workspaceId)
+    .eq("id", recordId);
+
+  if (error) {
+    setSyncStatus(`Could not delete task from shared workspace: ${error.message}`, "dirty");
+  }
+}
+
+function applyTaskChanges(record, changes) {
+  if (typeof changes.task === "string") record.task = String(changes.task).trim();
+  if (typeof changes.epic === "string") record.epic = String(changes.epic).trim();
+  if (typeof changes.assignee === "string") record.assignee = normalizeLabel(changes.assignee);
+  if (typeof changes.department === "string") record.department = normalizeLabel(changes.department);
+  if (changes.start) record.start = normalizeBusinessDate(changes.start, "forward") || record.start;
+  if (changes.end) record.end = normalizeBusinessDate(changes.end, "backward") || record.end;
+
+  if (changes.syncEndIfNeeded && record.end < record.start) record.end = record.start;
+
+  if (changes.workingDays) {
+    const start = normalizeBusinessDate(record.start, "forward") || record.start;
+    record.start = start;
+    record.end = addBusinessDays(start, changes.workingDays);
+  } else if (record.end < record.start) {
+    record.end = record.start;
+  }
+
+  record.days = dateRangeBusiness(record.start, record.end);
+  record.updatedByName = state.user.name;
+  record.updatedByClient = state.user.clientId;
+}
+
+async function saveTaskDraft() {
+  const draft = state.taskDraft;
+  if (!draft) return;
+
+  const normalized = {
+    task: String(draft.task || "").trim(),
+    epic: String(draft.epic || "").trim(),
+    department: normalizeLabel(draft.department),
+    assignee: normalizeLabel(draft.assignee),
+    start: draft.start,
+    end: draft.end,
+    workingDays: Math.max(1, Number(draft.workingDays) || 1)
+  };
+
+  if (!normalized.task || !normalized.epic || !normalized.start) {
+    alert("Task summary, epic, and start date are required.");
+    return;
+  }
+
+  if (state.taskModalMode === "create") {
+    const nextRowIndex = state.records.reduce((max, record) => Math.max(max, Number(record.rowIndex) || 0), 2) + 1;
+    const newRecord = enrichRecord({
+      id: `app-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+      rowIndex: nextRowIndex,
+      department: normalized.department,
+      epic: normalized.epic,
+      task: normalized.task,
+      assignee: normalized.assignee,
+      start: normalized.start,
+      end: normalized.start,
+      updatedByName: state.user.name,
+      updatedByClient: state.user.clientId
+    });
+    applyTaskChanges(newRecord, normalized);
+    state.records.push(newRecord);
+    state.selectedTaskId = newRecord.id;
+    renderAll();
+    await persistTaskToWorkspace(newRecord);
+    closeTaskModal();
+    return;
+  }
+
+  const record = getRecord(state.selectedTaskId);
+  if (!record) return;
+  applyTaskChanges(record, normalized);
+  renderAll();
+  await persistTaskToWorkspace(record);
+  closeTaskModal();
+}
+
+async function confirmDeleteSelectedTask() {
+  const record = getRecord(state.selectedTaskId);
+  if (!record) return;
+  const confirmed = window.confirm(`Delete task "${record.task}" from workspace "${state.sync.workspaceId}"?`);
+  if (!confirmed) return;
+
+  state.records = state.records.filter(item => item.id !== record.id);
+  state.selectedTaskId = null;
+  renderAll();
+  closeTaskModal();
+  await deleteTaskFromWorkspace(record.id);
 }
 
 function handleTaskPointerMove(event, element) {
   if (!dragState.active) return;
   const record = getRecord(dragState.recordId);
   if (!record) return;
+  dragState.lastX = event.clientX;
+  dragState.lastY = event.clientY;
 
   const deltaX = event.clientX - dragState.startX;
   const deltaY = event.clientY - dragState.startY;
@@ -1225,6 +1504,12 @@ function finishTaskPointerDrag(element) {
   if (!dragState.active) return;
   const shouldOpenModal = dragState.mode === "move" && !dragState.moved;
   const changedRecord = dragState.moved ? getRecord(dragState.recordId) : null;
+  if (changedRecord && dragState.mode === "move" && state.rowMode === "assignee") {
+    const dropTarget = document.elementFromPoint(dragState.lastX, dragState.lastY);
+    const targetRow = dropTarget ? dropTarget.closest(".board-row") : null;
+    const nextAssignee = targetRow && targetRow.dataset.rowName ? targetRow.dataset.rowName : "";
+    if (nextAssignee) changedRecord.assignee = normalizeLabel(nextAssignee);
+  }
   dragState.active = false;
   dragState.mode = null;
   const recordId = dragState.recordId;
@@ -1239,6 +1524,7 @@ function finishTaskPointerDrag(element) {
   renderAll();
   if (changedRecord) persistTaskToWorkspace(changedRecord);
   if (shouldOpenModal && recordId) openTaskModal(recordId);
+  if (!shouldOpenModal) clearLocalTaskPresence();
 }
 
 function startTaskPointerDrag(event, mode) {
@@ -1248,11 +1534,14 @@ function startTaskPointerDrag(event, mode) {
   if (!record) return;
   event.preventDefault();
   state.selectedTaskId = record.id;
+  setLocalTaskPresence(record.id);
   dragState.active = true;
   dragState.mode = mode;
   dragState.recordId = record.id;
   dragState.startX = event.clientX;
   dragState.startY = event.clientY;
+  dragState.lastX = event.clientX;
+  dragState.lastY = event.clientY;
   dragState.startDate = record.start;
   dragState.endDate = record.end;
   dragState.originalAssignee = record.assignee;
@@ -1319,7 +1608,7 @@ function renderBoard() {
   rows.forEach(row => {
     const rowHeight = Math.max(74, 8 + (row.laneCount * 58));
     const timelineWidth = dateCols.length * 150;
-    html += '<div class="board-row">';
+    html += `<div class="board-row" data-row-name="${escapeHtml(row.name)}">`;
     html += `<div class="row-label"><div class="row-title">${escapeHtml(row.name)}</div><div class="row-sub">${escapeHtml(row.sub)}</div></div>`;
     html += `<div class="timeline" style="width:${timelineWidth}px; min-width:${timelineWidth}px; height:${rowHeight}px;">`;
     if (row.placedTasks.length === 0) {
@@ -1381,7 +1670,7 @@ function renderSummary() {
 }
 
 function renderStatus() {
-  const dirtyCount = getDirtyRecords().length;
+  const dirtyCount = getDirtyRecords().length + getDeletedOriginalCount();
   const selected = getRecord(state.selectedTaskId);
   changeStatus.classList.toggle("dirty", dirtyCount > 0);
 
@@ -1399,72 +1688,73 @@ function updateTask(recordId, changes) {
   const record = getRecord(recordId);
   if (!record) return;
 
-  if (typeof changes.assignee === "string") record.assignee = normalizeLabel(changes.assignee);
-  if (typeof changes.department === "string") record.department = normalizeLabel(changes.department);
-  if (changes.start) record.start = normalizeBusinessDate(changes.start, "forward") || record.start;
-  if (changes.end) record.end = normalizeBusinessDate(changes.end, "backward") || record.end;
-
-  if (changes.syncEndIfNeeded && record.end < record.start) record.end = record.start;
-
-  if (changes.workingDays) {
-    const start = normalizeBusinessDate(record.start, "forward") || record.start;
-    record.start = start;
-    record.end = addBusinessDays(start, changes.workingDays);
-  } else if (record.end < record.start) {
-    record.end = record.start;
-  }
-
-  record.days = dateRangeBusiness(record.start, record.end);
-  record.updatedByName = state.user.name;
-  record.updatedByClient = state.user.clientId;
+  applyTaskChanges(record, changes);
   renderAll();
   if (!taskModal.hidden) renderTaskModal();
   persistTaskToWorkspace(record);
 }
 
 function renderTaskModal() {
-  const record = getRecord(state.selectedTaskId);
-  if (!record) {
+  const record = state.taskModalMode === "edit" ? getRecord(state.selectedTaskId) : null;
+  const draft = state.taskDraft;
+  if (!draft) {
     taskModalContent.innerHTML = '<div class="editor-empty"><strong>Task editor</strong><br />Select a task on the board to edit it.</div>';
     return;
   }
 
-  const original = getOriginalRecord(record.id);
-  const dirty = isTaskDirty(record);
+  const original = record ? getOriginalRecord(record.id) : null;
+  const isNewTask = state.taskModalMode === "create" || isAppAdded(record);
+  const dirty = record ? isTaskDirty(record) : true;
   taskModalContent.innerHTML = `
     <div class="section-title">Selected task</div>
     <div class="editor-head">
       <div>
-        <div class="editor-title">${escapeHtml(record.task)}</div>
-        <div class="editor-meta">${escapeHtml(record.department)} • ${escapeHtml(record.epic)}</div>
+        <div class="editor-title">${escapeHtml(draft.task || "New task")}</div>
+        <div class="editor-meta">${escapeHtml(draft.department)} • ${escapeHtml(draft.epic)}</div>
       </div>
-      <div class="editor-badge ${dirty ? "dirty" : ""}">${dirty ? "Edited" : "Original"}</div>
+      <div class="editor-badge ${dirty ? "dirty" : ""}">${isNewTask ? "Added in app" : dirty ? "Edited" : "Original"}</div>
+    </div>
+    <div class="input-grid single">
+      <div class="editor-field">
+        <label for="editTaskName">Task summary</label>
+        <input id="editTaskName" class="editor-input" type="text" value="${escapeHtml(draft.task)}" />
+      </div>
+    </div>
+    <div class="input-grid">
+      <div class="editor-field">
+        <label for="editDepartment">Department</label>
+        <input id="editDepartment" class="editor-input" type="text" value="${escapeHtml(draft.department)}" />
+      </div>
+      <div class="editor-field">
+        <label for="editEpic">Epic</label>
+        <input id="editEpic" class="editor-input" type="text" value="${escapeHtml(draft.epic)}" />
+      </div>
     </div>
     <div class="input-grid single">
       <div class="editor-field">
         <label for="editAssignee">Assignee</label>
         <select id="editAssignee" class="editor-input">
-          ${getAssignees().map(name => `<option value="${escapeHtml(name)}" ${name === record.assignee ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
-          ${getAssignees().includes(record.assignee) ? "" : `<option value="${escapeHtml(record.assignee)}" selected>${escapeHtml(record.assignee)}</option>`}
+          ${getAssignees().map(name => `<option value="${escapeHtml(name)}" ${name === draft.assignee ? "selected" : ""}>${escapeHtml(name)}</option>`).join("")}
+          ${getAssignees().includes(draft.assignee) ? "" : `<option value="${escapeHtml(draft.assignee)}" selected>${escapeHtml(draft.assignee)}</option>`}
         </select>
       </div>
     </div>
-    <div class="editor-help">Current: ${escapeHtml(record.assignee)} • ${escapeHtml(record.start)} to ${escapeHtml(record.end)} (${record.days.length} working day${record.days.length === 1 ? "" : "s"})</div>
-    <div class="editor-help">Original: ${escapeHtml(original.assignee)} • ${escapeHtml(original.start)} to ${escapeHtml(original.end)} (${original.days.length} working day${original.days.length === 1 ? "" : "s"})</div>
+    <div class="editor-help">Draft: ${escapeHtml(draft.assignee)} • ${escapeHtml(draft.start)} to ${escapeHtml(draft.end)} (${draft.workingDays} working day${draft.workingDays === 1 ? "" : "s"})</div>
+    ${original ? `<div class="editor-help">Original: ${escapeHtml(original.assignee)} • ${escapeHtml(original.start)} to ${escapeHtml(original.end)} (${original.days.length} working day${original.days.length === 1 ? "" : "s"})</div>` : '<div class="editor-help">This task will be marked as added in the app after you save it.</div>'}
     <div class="input-grid">
       <div class="editor-field">
         <label for="editStart">Start date</label>
-        <input id="editStart" class="editor-input" type="date" value="${escapeHtml(record.start)}" />
+        <input id="editStart" class="editor-input" type="date" value="${escapeHtml(draft.start)}" />
       </div>
       <div class="editor-field">
         <label for="editEnd">End date</label>
-        <input id="editEnd" class="editor-input" type="date" value="${escapeHtml(record.end)}" />
+        <input id="editEnd" class="editor-input" type="date" value="${escapeHtml(draft.end)}" />
       </div>
     </div>
     <div class="input-grid">
       <div class="editor-field">
         <label for="editDays">Working days</label>
-        <input id="editDays" class="editor-input" type="number" min="1" step="1" value="${record.days.length}" />
+        <input id="editDays" class="editor-input" type="number" min="1" step="1" value="${draft.workingDays}" />
       </div>
       <div class="editor-field">
         <label>&nbsp;</label>
@@ -1472,26 +1762,27 @@ function renderTaskModal() {
       </div>
     </div>
     <div class="editor-actions">
+      ${record ? '<button class="action light" id="deleteTaskBtn">Delete task</button>' : ""}
+      <button class="action dark" id="saveTaskBtn">Save</button>
       <button class="action light" id="closeTaskModal">Close</button>
     </div>
   `;
 
-  document.getElementById("editAssignee").addEventListener("change", event => {
-    updateTask(record.id, { assignee: event.target.value });
+  document.getElementById("saveTaskBtn").addEventListener("click", () => {
+    state.taskDraft = {
+      task: document.getElementById("editTaskName").value.trim(),
+      department: document.getElementById("editDepartment").value.trim(),
+      epic: document.getElementById("editEpic").value.trim(),
+      assignee: document.getElementById("editAssignee").value.trim(),
+      start: document.getElementById("editStart").value,
+      end: document.getElementById("editEnd").value,
+      workingDays: Math.max(1, Number(document.getElementById("editDays").value) || 1)
+    };
+    saveTaskDraft();
   });
-
-  document.getElementById("editStart").addEventListener("change", event => {
-    updateTask(record.id, { start: event.target.value, syncEndIfNeeded: true });
-  });
-
-  document.getElementById("editEnd").addEventListener("change", event => {
-    updateTask(record.id, { end: event.target.value });
-  });
-
-  document.getElementById("editDays").addEventListener("change", event => {
-    updateTask(record.id, { workingDays: Math.max(1, Number(event.target.value) || 1) });
-  });
-
+  if (record) {
+    document.getElementById("deleteTaskBtn").addEventListener("click", confirmDeleteSelectedTask);
+  }
   document.getElementById("closeTaskModal").addEventListener("click", closeTaskModal);
 }
 
@@ -1554,28 +1845,49 @@ function setDisplayMode(mode) {
   renderAll();
 }
 
+function buildExportRowForRecord(record, templateRow) {
+  const headerLength = state.source.rows[2] ? state.source.rows[2].length : 0;
+  const row = templateRow ? [...templateRow] : new Array(headerLength).fill("");
+  const { colIndex, dateColumnIndices, dateIndexMap } = state.source;
+
+  if (isAppAdded(record)) {
+    for (let index = 0; index < row.length; index++) row[index] = "";
+  }
+
+  row[colIndex["Department"]] = record.department;
+  row[colIndex["Epic"]] = record.epic;
+  row[colIndex["Task Summary"]] = record.task;
+  row[colIndex["Assignee\n(use email)"]] = record.assignee;
+  row[colIndex["Start"]] = formatTemplateDate(record.start);
+  row[colIndex["End"]] = formatTemplateDate(record.end);
+  row[colIndex["Day"]] = String(record.days.length);
+
+  dateColumnIndices.forEach(index => { row[index] = ""; });
+  record.days.forEach(day => {
+    const columnIndex = dateIndexMap.get(day);
+    if (columnIndex !== undefined) row[columnIndex] = "1";
+  });
+
+  return row;
+}
+
 function buildExportRows() {
   if (!state.source) return null;
-  const rows = cloneRows(state.source.rows);
+  const rows = cloneRows(state.source.rows.slice(0, 3));
+  const templateRecord = state.originalRecords[0] || state.records[0];
+  const templateRow = templateRecord && state.source.rows[templateRecord.rowIndex]
+    ? [...state.source.rows[templateRecord.rowIndex]]
+    : new Array(state.source.rows[2] ? state.source.rows[2].length : 0).fill("");
 
-  state.records.forEach(record => {
-    const row = rows[record.rowIndex] || [];
-    const { colIndex, dateColumnIndices, dateIndexMap } = state.source;
-
-    row[colIndex["Department"]] = record.department;
-    row[colIndex["Assignee\n(use email)"]] = record.assignee;
-    row[colIndex["Start"]] = formatTemplateDate(record.start);
-    row[colIndex["End"]] = formatTemplateDate(record.end);
-    row[colIndex["Day"]] = String(record.days.length);
-
-    dateColumnIndices.forEach(index => { row[index] = ""; });
-    record.days.forEach(day => {
-      const columnIndex = dateIndexMap.get(day);
-      if (columnIndex !== undefined) row[columnIndex] = "1";
+  state.records
+    .slice()
+    .sort((a, b) => a.rowIndex - b.rowIndex || a.task.localeCompare(b.task))
+    .forEach(record => {
+      const baseRow = !isAppAdded(record) && state.source.rows[record.rowIndex]
+        ? [...state.source.rows[record.rowIndex]]
+        : [...templateRow];
+      rows.push(buildExportRowForRecord(record, baseRow));
     });
-
-    rows[record.rowIndex] = row;
-  });
 
   return rows;
 }
@@ -1643,11 +1955,19 @@ function bindEvents() {
   document.getElementById("undoChangesBtn").addEventListener("click", resetChanges);
   document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
   document.getElementById("switchWorkspaceBtn").addEventListener("click", async () => {
+    closeWorkspaceMenu();
     await fetchAvailableWorkspaces();
     openWorkspaceModal();
   });
+  document.getElementById("addTaskBtn").addEventListener("click", () => {
+    closeWorkspaceMenu();
+    openCreateTaskModal();
+  });
   taskModalBackdrop.addEventListener("click", closeTaskModal);
-  document.getElementById("editIdentityBtn").addEventListener("click", () => openIdentityModal(true));
+  document.getElementById("editIdentityBtn").addEventListener("click", () => {
+    closeWorkspaceMenu();
+    openIdentityModal(true);
+  });
   document.getElementById("saveIdentityBtn").addEventListener("click", saveIdentityFromInput);
   document.getElementById("cancelIdentityBtn").addEventListener("click", closeIdentityModal);
   identityModalBackdrop.addEventListener("click", closeIdentityModal);
@@ -1664,6 +1984,9 @@ function bindEvents() {
   });
   newWorkspaceIdInput.addEventListener("keydown", event => {
     if (event.key === "Enter") submitCreateWorkspace();
+  });
+  window.addEventListener("beforeunload", () => {
+    clearLocalTaskPresence();
   });
 }
 

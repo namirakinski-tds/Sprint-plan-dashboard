@@ -68,6 +68,41 @@
     color: #374151;
   }
   .segmented button.active { background: white; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+  .compact-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .compact-toggle-label {
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .toggle-pills {
+    display: inline-flex;
+    padding: 4px;
+    border-radius: 999px;
+    background: #f3f4f6;
+    gap: 4px;
+  }
+  .toggle-pills button {
+    min-height: 34px;
+    border: 0;
+    border-radius: 999px;
+    padding: 8px 12px;
+    background: transparent;
+    color: #4b5563;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .toggle-pills button.active {
+    background: white;
+    color: #111827;
+    box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
   .field { margin-top: 16px; }
   .field label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
   .menu-card {
@@ -330,6 +365,35 @@
     background: #facc15;
     box-shadow: 0 0 0 2px rgba(255,255,255,.65);
   }
+  .task-app-mark {
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    border-radius: 999px;
+    padding: 3px 7px;
+    background: rgba(255,255,255,.9);
+    color: #0f172a;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .02em;
+  }
+  .task-presence-pill {
+    position: absolute;
+    top: -10px;
+    left: 10px;
+    max-width: calc(100% - 20px);
+    border-radius: 999px;
+    padding: 4px 8px;
+    background: rgba(17, 24, 39, 0.92);
+    color: white;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: .02em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 8px 16px rgba(15, 23, 42, 0.2);
+  }
   .task-title {
     font-size: 12px;
     font-weight: 800;
@@ -473,6 +537,12 @@
     background: #fafafa;
     padding: 14px;
   }
+  .toolbar-stack {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
   .status-strip {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -482,6 +552,57 @@
     display: block;
     font-size: 13px;
     margin-top: 4px;
+  }
+  .workspace-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: #fafafa;
+    padding: 10px 14px;
+    cursor: pointer;
+  }
+  .workspace-chip-label {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .workspace-chip-label span {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    font-weight: 800;
+  }
+  .workspace-chip-label strong {
+    font-size: 14px;
+    line-height: 1.2;
+  }
+  .workspace-menu {
+    position: relative;
+  }
+  .workspace-menu > summary {
+    list-style: none;
+  }
+  .workspace-menu > summary::-webkit-details-marker { display: none; }
+  .workspace-menu-body {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 10px);
+    width: min(320px, calc(100vw - 48px));
+    border: 1px solid var(--line);
+    border-radius: 18px;
+    background: white;
+    box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
+    padding: 14px;
+    z-index: 80;
+  }
+  .workspace-menu-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
   }
   .workspace-list {
     display: flex;
@@ -592,18 +713,26 @@
     <div class="toolbar">
       <div class="toolbar-grid">
         <div class="toolbar-section">
-          <div class="section-title">Display mode</div>
-          <div class="segmented">
-            <button id="displayPlan" class="active">Plan</button>
-            <button id="displaySummary">Epic summary</button>
+          <div class="toolbar-stack">
+            <div class="compact-toggle">
+              <div class="compact-toggle-label">View</div>
+              <div class="toggle-pills">
+                <button id="displayPlan" class="active">Plan</button>
+                <button id="displaySummary">Summary</button>
+              </div>
+            </div>
           </div>
         </div>
 
         <div class="toolbar-section">
-          <div class="section-title">Plan rows</div>
-          <div class="segmented">
-            <button id="viewAssignee" class="active">Assignee rows</button>
-            <button id="viewEpic">Epic rows</button>
+          <div class="toolbar-stack">
+            <div class="compact-toggle">
+              <div class="compact-toggle-label">Rows</div>
+              <div class="toggle-pills">
+                <button id="viewAssignee" class="active">Assignee</button>
+                <button id="viewEpic">Epic</button>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -658,25 +787,32 @@
         </details>
 
         <div class="toolbar-section">
-          <div class="section-title">Workspace</div>
-          <div class="user-row">
-            <div>
-              <div class="legend-note">Editing as</div>
-              <strong id="collaboratorName">Not set</strong>
+          <details class="workspace-menu" id="workspaceMenu">
+            <summary>
+              <div class="workspace-chip">
+                <div class="workspace-chip-label">
+                  <span>Workspace</span>
+                  <strong id="currentWorkspaceLabel">Not selected</strong>
+                </div>
+                <div class="menu-chevron">⌄</div>
+              </div>
+            </summary>
+            <div class="workspace-menu-body">
+              <div class="user-row">
+                <div>
+                  <div class="legend-note">Editing as</div>
+                  <strong id="collaboratorName">Not set</strong>
+                </div>
+                <button class="action light" id="editIdentityBtn" type="button">Change name</button>
+              </div>
+              <div class="workspace-menu-actions">
+                <button class="action light" id="switchWorkspaceBtn" type="button">Switch workspace</button>
+                <button class="action light" id="addTaskBtn" type="button">Add task</button>
+                <button class="action light" id="undoChangesBtn">Undo CSV changes</button>
+                <button class="action dark" id="downloadBtn">Download CSV</button>
+              </div>
             </div>
-            <button class="action light" id="editIdentityBtn" type="button">Change name</button>
-          </div>
-          <div class="user-row">
-            <div>
-              <div class="legend-note">Current workspace</div>
-              <strong id="currentWorkspaceLabel">Not selected</strong>
-            </div>
-            <button class="action light" id="switchWorkspaceBtn" type="button">Switch</button>
-          </div>
-          <div class="row">
-            <button class="action light" id="undoChangesBtn">Undo CSV changes</button>
-            <button class="action dark" id="downloadBtn">Download CSV</button>
-          </div>
+          </details>
         </div>
       </div>
       <div id="activeChips" class="chips"></div>
