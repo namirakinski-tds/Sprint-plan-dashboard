@@ -62,7 +62,6 @@ const assigneeList = document.getElementById("assigneeList");
 const activeChips = document.getElementById("activeChips");
 const board = document.getElementById("board");
 const summary = document.getElementById("summary");
-const csvFile = document.getElementById("csvFile");
 const changeStatus = document.getElementById("changeStatus");
 const syncStatus = document.getElementById("syncStatus");
 const taskModal = document.getElementById("taskModal");
@@ -76,6 +75,7 @@ const workspaceModalBackdrop = document.getElementById("workspaceModalBackdrop")
 const workspaceUserNameInput = document.getElementById("workspaceUserName");
 const workspaceList = document.getElementById("workspaceList");
 const newWorkspaceIdInput = document.getElementById("newWorkspaceId");
+const newWorkspaceCsvInput = document.getElementById("newWorkspaceCsv");
 const workspaceModalNote = document.getElementById("workspaceModalNote");
 const identityModal = document.getElementById("identityModal");
 const identityModalBackdrop = document.getElementById("identityModalBackdrop");
@@ -184,6 +184,7 @@ function openWorkspaceModal() {
   workspaceModal.hidden = false;
   workspaceUserNameInput.value = state.user.name;
   newWorkspaceIdInput.value = "";
+  newWorkspaceCsvInput.value = "";
   state.selectedWorkspaceOption = state.sync.workspaceId || state.selectedWorkspaceOption || (state.availableWorkspaces[0] ? state.availableWorkspaces[0].id : "");
   renderWorkspaceList();
   setWorkspaceModalNote(state.availableWorkspaces.length
@@ -216,18 +217,22 @@ async function fetchAvailableWorkspaces() {
 }
 
 async function activateWorkspace(workspaceId, options = {}) {
-  const { loadExisting = true, notifyChanges = false } = options;
+  const { loadExisting = true, notifyChanges = false, parsedData = null } = options;
   state.sync.workspaceId = workspaceId;
   state.selectedWorkspaceOption = workspaceId;
   persistWorkspaceSelection(workspaceId);
   renderIdentity();
   subscribeToWorkspace(workspaceId);
 
-  if (loadExisting) {
+  if (parsedData) {
+    applyParsedData(parsedData);
+    await publishCurrentBoard();
+    setSyncStatus(`Workspace "${workspaceId}" is ready and linked to ${parsedData.fileName}.`, "connected");
+  } else if (loadExisting) {
     await loadWorkspaceFromRemote(false, notifyChanges);
   } else {
     await loadDefaultCsv();
-    setSyncStatus(`Workspace "${workspaceId}" is ready. Upload a CSV, then publish when you want to share it.`, "connected");
+    setSyncStatus(`Workspace "${workspaceId}" is ready.`, "connected");
   }
 }
 
@@ -261,8 +266,20 @@ async function submitCreateWorkspace() {
     newWorkspaceIdInput.focus();
     return;
   }
+  const file = newWorkspaceCsvInput.files && newWorkspaceCsvInput.files[0];
+  if (!file) {
+    setWorkspaceModalNote("Upload the CSV that belongs to this new workspace.", "error");
+    newWorkspaceCsvInput.focus();
+    return;
+  }
+  const text = await file.text();
+  const parsed = parseCsvText(text, file.name);
+  if (!parsed) {
+    setWorkspaceModalNote("Could not parse this CSV. Please use the same sprint rehearsal export format.", "error");
+    return;
+  }
   persistUserIdentity(name);
-  await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false });
+  await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false, parsedData: parsed });
   closeWorkspaceModal();
 }
 
@@ -1284,7 +1301,7 @@ function renderBoard() {
 
   if (filtered.length === 0 || dateCols.length === 0) {
     board.innerHTML = state.records.length === 0
-      ? '<div class="empty-state">Upload a CSV or load a shared workspace to start planning.</div>'
+      ? '<div class="empty-state">Choose or create a workspace to start planning.</div>'
       : '<div class="empty-state">No rows match the current filters.</div>';
     return;
   }
@@ -1325,7 +1342,7 @@ function renderSummary() {
 
   if (filtered.length === 0) {
     summary.innerHTML = state.records.length === 0
-      ? '<div class="empty-state">Upload a CSV or load a shared workspace to see the summary.</div>'
+      ? '<div class="empty-state">Choose or create a workspace to see the summary.</div>'
       : '<div class="empty-state">No rows match the current filters.</div>';
     return;
   }
@@ -1602,18 +1619,6 @@ async function loadDefaultCsv() {
 }
 
 function bindEvents() {
-  csvFile.addEventListener("change", async event => {
-    const file = event.target.files && event.target.files[0];
-    if (!file) return;
-    const text = await file.text();
-    const parsed = parseCsvText(text, file.name);
-    if (!parsed) {
-      alert("Could not parse this CSV. Please use the same sprint rehearsal export format.");
-      return;
-    }
-    applyParsedData(parsed);
-  });
-
   deptSearch.addEventListener("input", renderOptions);
   epicSearch.addEventListener("input", renderOptions);
   assigneeSearch.addEventListener("input", renderOptions);
@@ -1637,8 +1642,6 @@ function bindEvents() {
   document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
   document.getElementById("undoChangesBtn").addEventListener("click", resetChanges);
   document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
-  document.getElementById("publishWorkspaceBtn").addEventListener("click", publishCurrentBoard);
-  document.getElementById("loadWorkspaceBtn").addEventListener("click", () => loadWorkspaceFromRemote(false, false));
   document.getElementById("switchWorkspaceBtn").addEventListener("click", async () => {
     await fetchAvailableWorkspaces();
     openWorkspaceModal();

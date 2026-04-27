@@ -41,14 +41,18 @@
   }
   .stat .k { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 4px; }
   .stat .v { font-size: 24px; font-weight: 700; }
-  .shell { display: grid; grid-template-columns: 420px 1fr; gap: 18px; align-items: start; }
-  .panel, .board-card {
+  .workspace-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .toolbar, .board-card {
     background: var(--card);
     border: 1px solid rgba(17,24,39,.06);
     box-shadow: var(--shadow);
     border-radius: var(--radius);
   }
-  .panel { padding: 16px; position: sticky; top: 16px; }
+  .toolbar { padding: 16px; }
   .board-card { padding: 12px; overflow: hidden; }
   .view-panel { display: flex; flex-direction: column; gap: 12px; }
   .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
@@ -457,6 +461,23 @@
     background: #fafafa;
     padding: 10px 12px;
   }
+  .toolbar-grid {
+    display: grid;
+    grid-template-columns: 1.2fr 1.2fr minmax(260px, .9fr) minmax(260px, .9fr);
+    gap: 12px;
+    align-items: start;
+  }
+  .toolbar-section {
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: #fafafa;
+    padding: 14px;
+  }
+  .status-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
   .user-row strong {
     display: block;
     font-size: 13px;
@@ -543,9 +564,8 @@
     100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0), 0 3px 8px rgba(15,23,42,.15); }
   }
   @media (max-width: 1200px) {
-    .shell { grid-template-columns: 1fr; }
-    .panel { position: static; }
     .board-wrap { max-height: none; }
+    .toolbar-grid, .status-strip { grid-template-columns: 1fr; }
   }
   @media (max-width: 860px) {
     .summary-head, .summary-row, .input-grid { grid-template-columns: 1fr; }
@@ -568,110 +588,102 @@
     <div class="stat"><div class="k">Assignees</div><div class="v" id="statAssignees">0</div></div>
   </div>
 
-  <div class="shell">
-    <div class="panel">
-      <div class="section-title">CSV input</div>
-      <input id="csvFile" class="upload" type="file" accept=".csv" />
-      <div class="legend-note">Upload a sprint CSV to start. The page no longer ships with a default CSV file.</div>
-
-      <div class="field">
-        <div class="section-title">Display mode</div>
-        <div class="segmented">
-          <button id="displayPlan" class="active">Plan</button>
-          <button id="displaySummary">Epic summary</button>
+  <div class="workspace-shell">
+    <div class="toolbar">
+      <div class="toolbar-grid">
+        <div class="toolbar-section">
+          <div class="section-title">Display mode</div>
+          <div class="segmented">
+            <button id="displayPlan" class="active">Plan</button>
+            <button id="displaySummary">Epic summary</button>
+          </div>
         </div>
-      </div>
 
-      <div class="field">
-        <div class="section-title">Plan rows</div>
-        <div class="segmented">
-          <button id="viewAssignee" class="active">Assignee rows</button>
-          <button id="viewEpic">Epic rows</button>
+        <div class="toolbar-section">
+          <div class="section-title">Plan rows</div>
+          <div class="segmented">
+            <button id="viewAssignee" class="active">Assignee rows</button>
+            <button id="viewEpic">Epic rows</button>
+          </div>
         </div>
-      </div>
 
-      <details class="menu-card" id="filtersMenu">
-        <summary>
-          <div>
-            <div class="menu-title">Filters</div>
-            <div class="menu-meta">Department, epic, assignee, and empty-row controls</div>
-          </div>
-          <div class="menu-chevron">⌄</div>
-        </summary>
-        <div class="menu-body">
-          <div class="field">
-            <label for="deptSearch">Department</label>
-            <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
-            <div class="row">
-              <button class="action light" id="deptAll">Select all</button>
-              <button class="action light" id="deptClear">Clear</button>
+        <details class="menu-card" id="filtersMenu">
+          <summary>
+            <div>
+              <div class="menu-title">Filters</div>
+              <div class="menu-meta">Department, epic, assignee, and empty-row controls</div>
             </div>
-            <div id="deptList" class="listbox"></div>
-          </div>
-
-          <div class="field">
-            <label for="epicSearch">Epic</label>
-            <input id="epicSearch" class="search" type="text" placeholder="Search epics..." />
-            <div class="row">
-              <button class="action light" id="epicAll">Select all</button>
-              <button class="action light" id="epicClear">Clear</button>
+            <div class="menu-chevron">⌄</div>
+          </summary>
+          <div class="menu-body">
+            <div class="field">
+              <label for="deptSearch">Department</label>
+              <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
+              <div class="row">
+                <button class="action light" id="deptAll">Select all</button>
+                <button class="action light" id="deptClear">Clear</button>
+              </div>
+              <div id="deptList" class="listbox"></div>
             </div>
-            <div id="epicList" class="listbox"></div>
-          </div>
 
-          <div class="field">
-            <label for="assigneeSearch">Assignee</label>
-            <input id="assigneeSearch" class="search" type="text" placeholder="Search assignees..." />
-            <div class="row">
-              <button class="action light" id="assigneeAll">Select all</button>
-              <button class="action light" id="assigneeClear">Clear</button>
+            <div class="field">
+              <label for="epicSearch">Epic</label>
+              <input id="epicSearch" class="search" type="text" placeholder="Search epics..." />
+              <div class="row">
+                <button class="action light" id="epicAll">Select all</button>
+                <button class="action light" id="epicClear">Clear</button>
+              </div>
+              <div id="epicList" class="listbox"></div>
             </div>
-            <div id="assigneeList" class="listbox"></div>
-          </div>
 
-          <div class="field">
-            <div class="section-title">Display</div>
-            <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
-          </div>
+            <div class="field">
+              <label for="assigneeSearch">Assignee</label>
+              <input id="assigneeSearch" class="search" type="text" placeholder="Search assignees..." />
+              <div class="row">
+                <button class="action light" id="assigneeAll">Select all</button>
+                <button class="action light" id="assigneeClear">Clear</button>
+              </div>
+              <div id="assigneeList" class="listbox"></div>
+            </div>
 
+            <div class="field">
+              <div class="section-title">Display</div>
+              <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
+            </div>
+
+            <div class="row">
+              <button class="action light" id="resetFiltersBtn">Reset filters</button>
+            </div>
+          </div>
+        </details>
+
+        <div class="toolbar-section">
+          <div class="section-title">Workspace</div>
+          <div class="user-row">
+            <div>
+              <div class="legend-note">Editing as</div>
+              <strong id="collaboratorName">Not set</strong>
+            </div>
+            <button class="action light" id="editIdentityBtn" type="button">Change name</button>
+          </div>
+          <div class="user-row">
+            <div>
+              <div class="legend-note">Current workspace</div>
+              <strong id="currentWorkspaceLabel">Not selected</strong>
+            </div>
+            <button class="action light" id="switchWorkspaceBtn" type="button">Switch</button>
+          </div>
           <div class="row">
-            <button class="action light" id="resetFiltersBtn">Reset filters</button>
+            <button class="action light" id="undoChangesBtn">Undo CSV changes</button>
+            <button class="action dark" id="downloadBtn">Download CSV</button>
           </div>
         </div>
-      </details>
-
-      <div class="row">
-        <button class="action light" id="undoChangesBtn">Undo CSV changes</button>
-        <button class="action dark" id="downloadBtn">Download CSV</button>
       </div>
-
       <div id="activeChips" class="chips"></div>
-
-      <div class="field">
-        <div class="section-title">Live Sync</div>
-        <div class="user-row">
-          <div>
-            <div class="legend-note">Editing as</div>
-            <strong id="collaboratorName">Not set</strong>
-          </div>
-          <button class="action light" id="editIdentityBtn" type="button">Change name</button>
-        </div>
-        <div class="user-row">
-          <div>
-            <div class="legend-note">Workspace</div>
-            <strong id="currentWorkspaceLabel">Not selected</strong>
-          </div>
-          <button class="action light" id="switchWorkspaceBtn" type="button">Switch</button>
-        </div>
+      <div class="status-strip">
+        <div id="changeStatus" class="status-banner">Choose or create a workspace to start editing the planning board.</div>
+        <div id="syncStatus" class="status-banner">Live sync is connecting in the background.</div>
       </div>
-
-      <div class="row">
-        <button class="action light" id="publishWorkspaceBtn">Publish current board</button>
-        <button class="action light" id="loadWorkspaceBtn">Load workspace</button>
-      </div>
-
-      <div id="changeStatus" class="status-banner">Upload a CSV to start editing the planning board.</div>
-      <div id="syncStatus" class="status-banner">Live sync is off. Connect to Supabase to share edits with the team.</div>
     </div>
 
     <div class="board-card">
@@ -711,10 +723,14 @@
       </div>
       <div class="workspace-pane">
         <h3>Create new workspace</h3>
-        <p>Start from a clean page, then upload a CSV and publish it when ready.</p>
+        <p>Each workspace owns one CSV source. To bring in a new file, create a new workspace here.</p>
         <div class="field">
           <label for="newWorkspaceId">Workspace ID</label>
           <input id="newWorkspaceId" class="editor-input" type="text" maxlength="80" placeholder="sprint-1" />
+        </div>
+        <div class="field">
+          <label for="newWorkspaceCsv">CSV file</label>
+          <input id="newWorkspaceCsv" class="upload" type="file" accept=".csv" />
         </div>
         <div class="identity-actions">
           <button class="action dark" id="createWorkspaceBtn" type="button">Create workspace</button>
