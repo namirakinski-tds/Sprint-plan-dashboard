@@ -95,6 +95,7 @@ const identityNameInput = document.getElementById("identityName");
 
 const userStorageKey = "planning-viewer-user";
 const workspaceStorageKey = "planning-viewer-workspace";
+const workspaceQueryKey = "workspace";
 const defaultSyncConfig = {
   url: "https://xbzvlwbmdtqwdzoxnnxa.supabase.co",
   anonKey: "sb_publishable_qDXHe21m5T_OP0urEu95EA_5WBxqOYs",
@@ -179,10 +180,22 @@ function openIdentityModal(forceFocus) {
 
 function persistWorkspaceSelection(workspaceId) {
   sessionStorage.setItem(workspaceStorageKey, workspaceId || "");
+  updateWorkspaceLocation(workspaceId);
+}
+
+function updateWorkspaceLocation(workspaceId) {
+  const nextUrl = new URL(window.location.href);
+  if (workspaceId) {
+    nextUrl.searchParams.set(workspaceQueryKey, workspaceId);
+  } else {
+    nextUrl.searchParams.delete(workspaceQueryKey);
+  }
+  window.history.replaceState({}, "", nextUrl);
 }
 
 function hydrateWorkspaceSelection() {
-  const stored = sessionStorage.getItem(workspaceStorageKey);
+  const params = new URLSearchParams(window.location.search);
+  const stored = params.get(workspaceQueryKey) || sessionStorage.getItem(workspaceStorageKey);
   if (stored) {
     state.sync.workspaceId = stored.trim();
   }
