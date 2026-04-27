@@ -251,6 +251,10 @@
   .task-bar.dirty { box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.85), 0 3px 8px rgba(15,23,42,.15); }
   .task-bar.dragging { cursor: grabbing; transform: none; z-index: 8; }
   .task-bar.resizing-start, .task-bar.resizing-end { transform: none; z-index: 8; }
+  .task-bar.remote-flash {
+    animation: remote-flash 1.8s ease;
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.9), 0 3px 8px rgba(15,23,42,.15);
+  }
   .resize-handle {
     position: absolute;
     top: 0;
@@ -364,6 +368,71 @@
     border: 1px solid rgba(17,24,39,.08);
     padding: 20px;
   }
+  .identity-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 18px;
+  }
+  .toast-stack {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 260;
+    width: min(680px, calc(100vw - 32px));
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    pointer-events: none;
+  }
+  .toast-card {
+    background: rgba(17, 24, 39, 0.96);
+    color: white;
+    border-radius: 16px;
+    padding: 14px 16px;
+    box-shadow: 0 18px 36px rgba(15, 23, 42, 0.24);
+    border: 1px solid rgba(255,255,255,.12);
+    animation: toast-life 5s ease forwards;
+  }
+  .toast-title {
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.4;
+  }
+  .toast-body {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: rgba(255,255,255,.82);
+  }
+  .user-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 10px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: #fafafa;
+    padding: 10px 12px;
+  }
+  .user-row strong {
+    display: block;
+    font-size: 13px;
+    margin-top: 4px;
+  }
+  @keyframes toast-life {
+    0% { opacity: 0; transform: translateY(-10px) scale(.98); }
+    8% { opacity: 1; transform: translateY(0) scale(1); }
+    84% { opacity: 1; transform: translateY(0) scale(1); }
+    100% { opacity: 0; transform: translateY(-8px) scale(.98); }
+  }
+  @keyframes remote-flash {
+    0% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.95), 0 3px 8px rgba(15,23,42,.15); }
+    40% { box-shadow: 0 0 0 5px rgba(34, 197, 94, 0.45), 0 3px 8px rgba(15,23,42,.15); }
+    100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0), 0 3px 8px rgba(15,23,42,.15); }
+  }
   @media (max-width: 1200px) {
     .shell { grid-template-columns: 1fr; }
     .panel { position: static; }
@@ -454,13 +523,23 @@
 
       <div class="field">
         <div class="section-title">Live Sync</div>
+        <div class="user-row">
+          <div>
+            <div class="legend-note">Editing as</div>
+            <strong id="collaboratorName">Not set</strong>
+          </div>
+          <button class="action light" id="editIdentityBtn" type="button">Change name</button>
+        </div>
+      </div>
+
+      <div class="field">
         <label for="supabaseUrl">Supabase URL</label>
         <input id="supabaseUrl" class="search" type="text" placeholder="https://your-project.supabase.co" />
       </div>
 
       <div class="field">
-        <label for="supabaseAnonKey">Supabase anon key</label>
-        <input id="supabaseAnonKey" class="search" type="password" placeholder="Paste your publishable anon key" />
+        <label for="supabaseAnonKey">Supabase publishable key</label>
+        <input id="supabaseAnonKey" class="search" type="password" placeholder="Preconfigured publishable key" />
       </div>
 
       <div class="field">
@@ -494,9 +573,28 @@
   </div>
 </div>
 
+<div id="remoteToastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+
 <div id="taskModal" class="modal-shell" hidden>
   <div class="modal-backdrop" id="taskModalBackdrop"></div>
   <div id="taskModalContent" class="modal-card"></div>
+</div>
+
+<div id="identityModal" class="modal-shell" hidden>
+  <div class="modal-backdrop" id="identityModalBackdrop"></div>
+  <div class="modal-card">
+    <div class="section-title">Collaborator profile</div>
+    <div class="editor-title">Choose the name your teammates will see</div>
+    <div class="editor-help">This name is stored in your browser and attached to your live edits so other people can tell who changed what.</div>
+    <div class="field">
+      <label for="identityName">Your name</label>
+      <input id="identityName" class="editor-input" type="text" maxlength="50" placeholder="Namira" />
+    </div>
+    <div class="identity-actions">
+      <button class="action light" id="cancelIdentityBtn" type="button">Later</button>
+      <button class="action dark" id="saveIdentityBtn" type="button">Save name</button>
+    </div>
+  </div>
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>

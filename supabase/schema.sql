@@ -4,6 +4,8 @@ create table if not exists public.planning_workspaces (
   id text primary key,
   file_name text not null,
   csv_rows jsonb not null,
+  last_published_by_name text,
+  last_published_by_client text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -18,8 +20,18 @@ create table if not exists public.planning_tasks (
   assignee text not null,
   start_date date not null,
   end_date date not null,
+  updated_by_name text,
+  updated_by_client text,
   updated_at timestamptz not null default now()
 );
+
+alter table public.planning_workspaces
+  add column if not exists last_published_by_name text,
+  add column if not exists last_published_by_client text;
+
+alter table public.planning_tasks
+  add column if not exists updated_by_name text,
+  add column if not exists updated_by_client text;
 
 create index if not exists planning_tasks_workspace_idx
   on public.planning_tasks (workspace_id, row_index);
@@ -78,5 +90,18 @@ for delete
 to anon, authenticated
 using (true);
 
-alter publication supabase_realtime add table public.planning_tasks;
-alter publication supabase_realtime add table public.planning_workspaces;
+do $$
+begin
+  alter publication supabase_realtime add table public.planning_tasks;
+exception
+  when duplicate_object then null;
+end
+$$;
+
+do $$
+begin
+  alter publication supabase_realtime add table public.planning_workspaces;
+exception
+  when duplicate_object then null;
+end
+$$;

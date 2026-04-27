@@ -16,6 +16,12 @@ const state = {
   selectedTaskId: null,
   source: null,
   fileName: "planning-viewer.csv",
+  user: {
+    name: "",
+    clientId: ""
+  },
+  remoteToasts: [],
+  remoteFlashTaskIds: new Set(),
   sync: {
     client: null,
     channel: null,
@@ -63,8 +69,120 @@ const workspaceIdInput = document.getElementById("workspaceId");
 const taskModal = document.getElementById("taskModal");
 const taskModalContent = document.getElementById("taskModalContent");
 const taskModalBackdrop = document.getElementById("taskModalBackdrop");
+const collaboratorName = document.getElementById("collaboratorName");
+const remoteToastStack = document.getElementById("remoteToastStack");
+const identityModal = document.getElementById("identityModal");
+const identityModalBackdrop = document.getElementById("identityModalBackdrop");
+const identityNameInput = document.getElementById("identityName");
 
 const syncStorageKey = "planning-viewer-supabase-config";
+const userStorageKey = "planning-viewer-user";
+const defaultSyncConfig = {
+  url: "https://xbzvlwbmdtqwdzoxnnxa.supabase.co",
+  anonKey: "sb_publishable_qDXHe21m5T_OP0urEu95EA_5WBxqOYs",
+  workspaceId: ""
+};
+
+function createClientId() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  return `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function normalizeLabel(value) {
+  const trimmed = String(value == null ? "" : value).trim();
+  return trimmed || "-";
+}
+
+function hydrateUserIdentity() {
+  let stored = null;
+  try {
+    stored = JSON.parse(localStorage.getItem(userStorageKey) || "null");
+  } catch (_error) {
+    localStorage.removeItem(userStorageKey);
+  }
+
+  state.user.clientId = stored && stored.clientId ? stored.clientId : createClientId();
+  state.user.name = stored && stored.name ? String(stored.name).trim() : "";
+  renderIdentity();
+  persistUserIdentity(state.user.name);
+}
+
+function persistUserIdentity(name) {
+  state.user.name = String(name || "").trim();
+  if (!state.user.clientId) state.user.clientId = createClientId();
+  localStorage.setItem(userStorageKey, JSON.stringify({
+    name: state.user.name,
+    clientId: state.user.clientId
+  }));
+  renderIdentity();
+}
+
+function renderIdentity() {
+  collaboratorName.textContent = state.user.name || "Not set";
+  identityNameInput.value = state.user.name;
+}
+
+function openIdentityModal(forceFocus) {
+  identityModal.hidden = false;
+  identityNameInput.value = state.user.name;
+  if (forceFocus) {
+    window.setTimeout(() => identityNameInput.focus(), 30);
+  }
+}
+
+function closeIdentityModal() {
+  identityModal.hidden = true;
+}
+
+function saveIdentityFromInput() {
+  const name = identityNameInput.value.trim();
+  if (!name) {
+    identityNameInput.focus();
+    return;
+  }
+  persistUserIdentity(name);
+  closeIdentityModal();
+}
+
+function ensureUserIdentity() {
+  if (state.user.name) return true;
+  openIdentityModal(true);
+  setSyncStatus("Add your name before connecting so teammates can see who changed what.", "dirty");
+  return false;
+}
+
+function queueRemoteToast(toast) {
+  if (!toast || state.remoteToasts.length >= 3) return;
+  const id = `toast-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const nextToast = { id, ...toast };
+  state.remoteToasts.push(nextToast);
+  renderRemoteToasts();
+  window.setTimeout(() => {
+    state.remoteToasts = state.remoteToasts.filter(item => item.id !== id);
+    renderRemoteToasts();
+  }, 5000);
+}
+
+function renderRemoteToasts() {
+  remoteToastStack.innerHTML = state.remoteToasts.map(toast => `
+    <div class="toast-card">
+      <div class="toast-title">${escapeHtml(toast.title)}</div>
+      <div class="toast-body">${escapeHtml(toast.body)}</div>
+    </div>
+  `).join("");
+}
+
+function flashRemoteTask(recordId) {
+  if (!recordId) return;
+  state.remoteFlashTaskIds.add(recordId);
+  renderView();
+  window.setTimeout(() => {
+    state.remoteFlashTaskIds.delete(recordId);
+    renderView();
+  }, 1800);
+}
 
 function escapeHtml(value) {
   return String(value)
@@ -95,13 +213,16 @@ function persistSyncInputs() {
 }
 
 function hydrateSyncInputs() {
+  supabaseUrlInput.value = defaultSyncConfig.url;
+  supabaseAnonKeyInput.value = defaultSyncConfig.anonKey;
+  workspaceIdInput.value = defaultSyncConfig.workspaceId;
   try {
     const raw = localStorage.getItem(syncStorageKey);
     if (!raw) return;
     const config = JSON.parse(raw);
-    supabaseUrlInput.value = config.url || "";
-    supabaseAnonKeyInput.value = config.anonKey || "";
-    workspaceIdInput.value = config.workspaceId || "";
+    supabaseUrlInput.value = config.url || defaultSyncConfig.url;
+    supabaseAnonKeyInput.value = config.anonKey || defaultSyncConfig.anonKey;
+    workspaceIdInput.value = config.workspaceId || defaultSyncConfig.workspaceId;
   } catch (_error) {
     localStorage.removeItem(syncStorageKey);
   }
@@ -273,6 +394,10 @@ function dateRangeBusiness(startStr, endStr) {
 function enrichRecord(record) {
   return {
     ...record,
+    department: normalizeLabel(record.department),
+    assignee: normalizeLabel(record.assignee),
+    updatedByName: record.updatedByName || "",
+    updatedByClient: record.updatedByClient || "",
     days: dateRangeBusiness(record.start, record.end)
   };
 }
@@ -335,7 +460,7 @@ function parseCsvRowsData(rows, fileName) {
     const start = parseDate(row[startIdx] || "");
     const end = parseDate(row[endIdx] || "");
 
-    if (!department || !epic || !task || !assignee || !start || !end) continue;
+    if (!epic || !task || !start || !end) continue;
 
     records.push(enrichRecord({
       id: `row-${rowIndex}`,
@@ -409,7 +534,7 @@ function getRecord(recordId) {
 }
 
 function isTaskDirty(record) {
-  const original = getOriginalRecord(record.id);
+  const original = getOriginalRecord(record.id) || record;
   if (!original) return false;
   return record.assignee !== original.assignee || record.start !== original.start || record.end !== original.end;
 }
@@ -428,7 +553,9 @@ function toWorkspaceTaskRows(records, workspaceId) {
     task: record.task,
     assignee: record.assignee,
     start_date: record.start,
-    end_date: record.end
+    end_date: record.end,
+    updated_by_name: record.updatedByName || state.user.name || "",
+    updated_by_client: record.updatedByClient || state.user.clientId || ""
   }));
 }
 
@@ -444,8 +571,74 @@ function fromWorkspaceTaskRows(taskRows) {
       task: row.task,
       assignee: row.assignee,
       start: row.start_date,
-      end: row.end_date
+      end: row.end_date,
+      updatedByName: row.updated_by_name || "",
+      updatedByClient: row.updated_by_client || ""
     }));
+}
+
+function buildRecordMap(records) {
+  return new Map(records.map(record => [record.id, record]));
+}
+
+function describeFieldChange(label, before, after) {
+  return `${label} from ${before} to ${after}`;
+}
+
+function getRecordChangeDetails(previous, next) {
+  const details = [];
+  if (previous.start !== next.start) details.push(describeFieldChange("start date", previous.start, next.start));
+  if (previous.end !== next.end) details.push(describeFieldChange("end date", previous.end, next.end));
+  if (previous.assignee !== next.assignee) details.push(describeFieldChange("assignee", previous.assignee, next.assignee));
+  if (previous.department !== next.department) details.push(describeFieldChange("department", previous.department, next.department));
+  return details;
+}
+
+function applyRemoteChanges(previousRecords, nextRecords, workspaceRow, notifyChanges) {
+  const previousMap = buildRecordMap(previousRecords);
+  const nextMap = buildRecordMap(nextRecords);
+  const workspaceActorName = workspaceRow && workspaceRow.last_published_by_name ? workspaceRow.last_published_by_name : "A teammate";
+  const workspaceActorClient = workspaceRow && workspaceRow.last_published_by_client ? workspaceRow.last_published_by_client : "";
+  const changedTaskIds = [];
+
+  if (!notifyChanges) return changedTaskIds;
+
+  nextRecords.forEach(record => {
+    const previous = previousMap.get(record.id);
+    const actorName = record.updatedByName || workspaceActorName;
+    const actorClient = record.updatedByClient || workspaceActorClient;
+
+    if (!previous) {
+      if (actorClient && actorClient === state.user.clientId) return;
+      queueRemoteToast({
+        title: `${actorName} added task ${record.task}.`,
+        body: `${record.task} is now assigned to ${record.assignee} from ${record.start} to ${record.end}.`
+      });
+      changedTaskIds.push(record.id);
+      return;
+    }
+
+    const changes = getRecordChangeDetails(previous, record);
+    if (changes.length === 0) return;
+    if (actorClient && actorClient === state.user.clientId) return;
+
+    queueRemoteToast({
+      title: `${actorName} edited task ${record.task}.`,
+      body: changes.join(", ")
+    });
+    changedTaskIds.push(record.id);
+  });
+
+  previousRecords.forEach(record => {
+    if (nextMap.has(record.id)) return;
+    if (workspaceActorClient && workspaceActorClient === state.user.clientId) return;
+    queueRemoteToast({
+      title: `${workspaceActorName} deleted task ${record.task}.`,
+      body: `${record.task} was removed from the shared board.`
+    });
+  });
+
+  return changedTaskIds;
 }
 
 function clearSyncChannel() {
@@ -471,12 +664,14 @@ async function connectSync() {
   const config = getSyncConfigFromInputs();
   persistSyncInputs();
 
+  if (!ensureUserIdentity()) return;
+
   if (!hasSupabaseSdk()) {
     setSyncStatus("Supabase client library is not available in this browser session.", "dirty");
     return;
   }
   if (!config.url || !config.anonKey || !config.workspaceId) {
-    setSyncStatus("Fill in Supabase URL, anon key, and workspace ID first.", "dirty");
+    setSyncStatus("Fill in Supabase URL, publishable key, and workspace ID first.", "dirty");
     return;
   }
 
@@ -535,7 +730,9 @@ async function publishCurrentBoard() {
     .upsert({
       id: workspaceId,
       file_name: state.fileName,
-      csv_rows: state.source.rows
+      csv_rows: state.source.rows,
+      last_published_by_name: state.user.name,
+      last_published_by_client: state.user.clientId
     });
   if (workspaceError) {
     setSyncStatus(`Could not publish workspace metadata: ${workspaceError.message}`, "dirty");
@@ -562,7 +759,7 @@ async function publishCurrentBoard() {
   setSyncStatus(`Published ${state.records.length} tasks to workspace "${workspaceId}".`, "connected");
 }
 
-async function loadWorkspaceFromRemote(silent) {
+async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   if (!state.sync.connected || !state.sync.client || !state.sync.workspaceId) {
     if (!silent) setSyncStatus("Connect to Supabase before loading a workspace.", "dirty");
     return;
@@ -573,7 +770,7 @@ async function loadWorkspaceFromRemote(silent) {
 
   const { data: workspaceRow, error: workspaceError } = await client
     .from("planning_workspaces")
-    .select("id, file_name, csv_rows")
+    .select("id, file_name, csv_rows, last_published_by_name, last_published_by_client")
     .eq("id", workspaceId)
     .maybeSingle();
   if (workspaceError) {
@@ -587,7 +784,7 @@ async function loadWorkspaceFromRemote(silent) {
 
   const { data: taskRows, error: taskError } = await client
     .from("planning_tasks")
-    .select("id, workspace_id, row_index, department, epic, task, assignee, start_date, end_date")
+    .select("id, workspace_id, row_index, department, epic, task, assignee, start_date, end_date, updated_by_name, updated_by_client")
     .eq("workspace_id", workspaceId);
   if (taskError) {
     if (!silent) setSyncStatus(`Could not load workspace tasks: ${taskError.message}`, "dirty");
@@ -600,14 +797,19 @@ async function loadWorkspaceFromRemote(silent) {
     return;
   }
 
+  const previousRecords = cloneRecords(state.records);
+  const nextRecords = fromWorkspaceTaskRows(taskRows || []);
+  const changedTaskIds = applyRemoteChanges(previousRecords, nextRecords, workspaceRow, notifyChanges && previousRecords.length > 0);
+
   state.sync.applyingRemote = true;
   state.source = parsed.source;
   state.fileName = parsed.fileName;
-  state.records = fromWorkspaceTaskRows(taskRows || []);
+  state.records = nextRecords;
   state.originalRecords = cloneRecords(state.records);
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
   renderAll();
+  changedTaskIds.forEach(flashRemoteTask);
   if (!silent) setSyncStatus(`Loaded workspace "${workspaceId}" with ${state.records.length} tasks.`, "connected");
 }
 
@@ -616,6 +818,8 @@ async function persistTaskToWorkspace(record) {
     return;
   }
 
+  record.updatedByName = state.user.name;
+  record.updatedByClient = state.user.clientId;
   const { error } = await state.sync.client
     .from("planning_tasks")
     .upsert({
@@ -627,7 +831,9 @@ async function persistTaskToWorkspace(record) {
       task: record.task,
       assignee: record.assignee,
       start_date: record.start,
-      end_date: record.end
+      end_date: record.end,
+      updated_by_name: record.updatedByName,
+      updated_by_client: record.updatedByClient
     });
   if (error) {
     setSyncStatus(`Could not sync task "${record.task}": ${error.message}`, "dirty");
@@ -824,6 +1030,7 @@ function taskBarHtml(task, colorMap) {
   const classes = [
     "task-bar",
     isTaskDirty(task) ? "dirty" : "",
+    state.remoteFlashTaskIds.has(task.id) ? "remote-flash" : "",
     task.id === state.selectedTaskId ? "selected" : ""
   ].filter(Boolean).join(" ");
   const dirtyMark = isTaskDirty(task) ? '<span class="task-dirty-mark"></span>' : "";
@@ -904,6 +1111,10 @@ function finishTaskPointerDrag(element) {
   dragState.pointerId = null;
   dragState.moved = false;
   clearDragVisuals(element);
+  if (changedRecord) {
+    changedRecord.updatedByName = state.user.name;
+    changedRecord.updatedByClient = state.user.clientId;
+  }
   renderAll();
   if (changedRecord) persistTaskToWorkspace(changedRecord);
   if (shouldOpenModal && recordId) openTaskModal(recordId);
@@ -1067,7 +1278,8 @@ function updateTask(recordId, changes) {
   const record = getRecord(recordId);
   if (!record) return;
 
-  if (typeof changes.assignee === "string") record.assignee = changes.assignee;
+  if (typeof changes.assignee === "string") record.assignee = normalizeLabel(changes.assignee);
+  if (typeof changes.department === "string") record.department = normalizeLabel(changes.department);
   if (changes.start) record.start = normalizeBusinessDate(changes.start, "forward") || record.start;
   if (changes.end) record.end = normalizeBusinessDate(changes.end, "backward") || record.end;
 
@@ -1082,6 +1294,8 @@ function updateTask(recordId, changes) {
   }
 
   record.days = dateRangeBusiness(record.start, record.end);
+  record.updatedByName = state.user.name;
+  record.updatedByClient = state.user.clientId;
   renderAll();
   if (!taskModal.hidden) renderTaskModal();
   persistTaskToWorkspace(record);
@@ -1227,6 +1441,7 @@ function buildExportRows() {
     const row = rows[record.rowIndex] || [];
     const { colIndex, dateColumnIndices, dateIndexMap } = state.source;
 
+    row[colIndex["Department"]] = record.department;
     row[colIndex["Assignee\n(use email)"]] = record.assignee;
     row[colIndex["Start"]] = formatTemplateDate(record.start);
     row[colIndex["End"]] = formatTemplateDate(record.end);
@@ -1324,14 +1539,23 @@ function bindEvents() {
   document.getElementById("connectSyncBtn").addEventListener("click", connectSync);
   document.getElementById("disconnectSyncBtn").addEventListener("click", disconnectSync);
   document.getElementById("publishWorkspaceBtn").addEventListener("click", publishCurrentBoard);
-  document.getElementById("loadWorkspaceBtn").addEventListener("click", () => loadWorkspaceFromRemote(false));
+  document.getElementById("loadWorkspaceBtn").addEventListener("click", () => loadWorkspaceFromRemote(false, false));
   taskModalBackdrop.addEventListener("click", closeTaskModal);
+  document.getElementById("editIdentityBtn").addEventListener("click", () => openIdentityModal(true));
+  document.getElementById("saveIdentityBtn").addEventListener("click", saveIdentityFromInput);
+  document.getElementById("cancelIdentityBtn").addEventListener("click", closeIdentityModal);
+  identityModalBackdrop.addEventListener("click", closeIdentityModal);
+  identityNameInput.addEventListener("keydown", event => {
+    if (event.key === "Enter") saveIdentityFromInput();
+  });
 }
 
 async function init() {
+  hydrateUserIdentity();
   hydrateSyncInputs();
   bindEvents();
   await loadDefaultCsv();
+  if (!state.user.name) openIdentityModal(false);
 }
 
 init();
