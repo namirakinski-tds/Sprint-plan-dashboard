@@ -10,6 +10,7 @@ create table if not exists public.planning_collaborators (
 
 create table if not exists public.planning_workspaces (
   id text primary key,
+  name text,
   file_name text not null,
   csv_rows jsonb not null,
   owner_name text,
@@ -50,6 +51,7 @@ create table if not exists public.planning_tasks (
 );
 
 alter table public.planning_workspaces
+  add column if not exists name text,
   add column if not exists owner_name text,
   add column if not exists owner_client text,
   add column if not exists owner_collaborator_id text references public.planning_collaborators(id) on delete set null,
@@ -79,6 +81,9 @@ create index if not exists planning_tasks_workspace_idx
 
 create index if not exists planning_workspace_members_collaborator_idx
   on public.planning_workspace_members (collaborator_id, last_seen_at desc);
+
+create index if not exists planning_workspaces_name_idx
+  on public.planning_workspaces (name);
 
 alter table public.planning_collaborators enable row level security;
 alter table public.planning_workspaces enable row level security;
