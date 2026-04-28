@@ -79,6 +79,8 @@ const taskModal = document.getElementById("taskModal");
 const taskModalContent = document.getElementById("taskModalContent");
 const taskModalBackdrop = document.getElementById("taskModalBackdrop");
 const collaboratorName = document.getElementById("collaboratorName");
+const currentWorkspaceOwner = document.getElementById("currentWorkspaceOwner");
+const currentWorkspaceAccess = document.getElementById("currentWorkspaceAccess");
 const currentWorkspaceLabel = document.getElementById("currentWorkspaceLabel");
 const remoteToastStack = document.getElementById("remoteToastStack");
 const workspaceMenu = document.getElementById("workspaceMenu");
@@ -215,6 +217,10 @@ function renderIdentity() {
   identityNameInput.value = state.user.name;
   workspaceUserNameInput.value = state.user.name;
   currentWorkspaceLabel.textContent = state.currentWorkspace ? getWorkspaceDisplayName(state.currentWorkspace) : (state.sync.workspaceId || "Not selected");
+  currentWorkspaceOwner.textContent = state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : "Unknown";
+  currentWorkspaceAccess.textContent = state.currentWorkspace
+    ? (isCurrentUserWorkspaceOwner() ? "Owner access" : state.currentWorkspace.accessRole === "collaborator" ? "Collaborator access" : "Viewer access")
+    : "No workspace selected";
   const deleteWorkspaceBtn = document.getElementById("deleteWorkspaceBtn");
   if (deleteWorkspaceBtn) {
     deleteWorkspaceBtn.hidden = !isCurrentUserWorkspaceOwner();
@@ -228,7 +234,8 @@ function setCurrentWorkspaceMeta(workspace) {
     fileName: workspace.file_name || "",
     ownerName: workspace.owner_name || "",
     ownerClient: workspace.owner_client || "",
-    ownerCollaboratorId: workspace.owner_collaborator_id || ""
+    ownerCollaboratorId: workspace.owner_collaborator_id || "",
+    accessRole: workspace.access_role || ""
   } : null;
   renderIdentity();
 }
@@ -328,6 +335,7 @@ function persistWorkspaceCache(workspaceId, payload) {
     ownerName: payload.ownerName || "",
     ownerClient: payload.ownerClient || "",
     ownerCollaboratorId: payload.ownerCollaboratorId || "",
+    accessRole: payload.accessRole || "",
     cachedAt: new Date().toISOString()
   };
   writeWorkspaceCacheMap(cacheMap);
@@ -370,7 +378,8 @@ function restoreWorkspaceFromCache(workspaceId) {
     file_name: cached.fileName,
     owner_name: cached.ownerName,
     owner_client: cached.ownerClient,
-    owner_collaborator_id: cached.ownerCollaboratorId
+    owner_collaborator_id: cached.ownerCollaboratorId,
+    access_role: cached.accessRole || ""
   });
   state.source = parsed.source;
   state.fileName = parsed.fileName;
@@ -454,41 +463,24 @@ async function fetchAvailableWorkspaces() {
     return [];
   }
 
-  const { data: ownedRows, error: ownedError } = await state.sync.client
-    .from("planning_workspaces")
-    .select("id")
-    .eq("owner_client", state.user.clientId);
-  if (ownedError) {
-    debugLog("fetchAvailableWorkspaces:ownedError", { message: ownedError.message });
-    setWorkspaceModalNote(`Could not load your owned workspaces: ${ownedError.message}`, "error");
-    return [];
-  }
-
-  const workspaceIds = Array.from(new Set([
-    ...(memberRows || []).map(row => row.workspace_id),
-    ...(ownedRows || []).map(row => row.id)
-  ])).filter(Boolean);
-
-  if (!workspaceIds.length) {
-    state.availableWorkspaces = [];
-    renderWorkspaceList();
-    debugLog("fetchAvailableWorkspaces:empty", {
-      membershipCount: (memberRows || []).length,
-      ownedCount: (ownedRows || []).length
-    });
-    return [];
-  }
-
   const membershipByWorkspaceId = new Map((memberRows || []).map(row => [row.workspace_id, row]));
   const { data, error } = await state.sync.client
     .from("planning_workspaces")
     .select("id, name, file_name, owner_name, owner_client, owner_collaborator_id, updated_at")
-    .in("id", workspaceIds)
     .order("updated_at", { ascending: false });
 
   if (error) {
-    debugLog("fetchAvailableWorkspaces:workspaceError", { message: error.message, workspaceIds });
+    debugLog("fetchAvailableWorkspaces:workspaceError", { message: error.message });
     setWorkspaceModalNote(`Could not load workspaces: ${error.message}`, "error");
+    return [];
+  }
+
+  if (!(data || []).length) {
+    state.availableWorkspaces = [];
+    renderWorkspaceList();
+    debugLog("fetchAvailableWorkspaces:empty", {
+      membershipCount: (memberRows || []).length
+    });
     return [];
   }
 
@@ -496,14 +488,17 @@ async function fetchAvailableWorkspaces() {
     const membership = membershipByWorkspaceId.get(workspace.id);
     return {
       ...workspace,
-      access_role: (workspace.owner_collaborator_id || workspace.owner_client) === state.user.clientId ? "owner" : membership && membership.role ? membership.role : "collaborator"
+      access_role: (workspace.owner_collaborator_id || workspace.owner_client) === state.user.clientId
+        ? "owner"
+        : membership && membership.role
+          ? membership.role
+          : "viewer"
     };
   });
   if (!state.selectedWorkspaceOption && state.availableWorkspaces[0]) {
     state.selectedWorkspaceOption = state.availableWorkspaces[0].id;
   }
   debugLog("fetchAvailableWorkspaces:success", {
-    workspaceIds,
     availableWorkspaces: state.availableWorkspaces.map(workspace => ({
       id: workspace.id,
       name: getWorkspaceDisplayName(workspace),
@@ -536,7 +531,8 @@ async function activateWorkspace(workspaceId, options = {}) {
       file_name: parsedData ? parsedData.fileName : "",
       owner_name: owner.owner_name || "",
       owner_client: owner.owner_client || "",
-      owner_collaborator_id: owner.owner_collaborator_id || owner.owner_client || ""
+      owner_collaborator_id: owner.owner_collaborator_id || owner.owner_client || "",
+      access_role: "owner"
     });
   }
   renderIdentity();
@@ -1501,7 +1497,8 @@ async function publishCurrentBoard() {
     taskRows: toWorkspaceTaskRows(state.records, workspaceId),
     ownerName: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
     ownerClient: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
-    ownerCollaboratorId: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId
+    ownerCollaboratorId: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId,
+    accessRole: "owner"
   });
   await fetchAvailableWorkspaces();
   debugLog("publishCurrentBoard:success", { workspaceId, taskCount: state.records.length });
@@ -1602,7 +1599,8 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
     taskRows: taskRows || [],
     ownerName: workspaceRow.owner_name || "",
     ownerClient: workspaceRow.owner_client || "",
-    ownerCollaboratorId: workspaceRow.owner_collaborator_id || ""
+    ownerCollaboratorId: workspaceRow.owner_collaborator_id || "",
+    accessRole: (workspaceRow.owner_collaborator_id || workspaceRow.owner_client) === state.user.clientId ? "owner" : "collaborator"
   });
   renderAll();
   changedTaskIds.forEach(flashRemoteTask);
@@ -1689,7 +1687,8 @@ async function persistTaskToWorkspace(record) {
     taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
     ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
     ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : "",
-    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : ""
+    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : "",
+    accessRole: state.currentWorkspace ? state.currentWorkspace.accessRole : ""
   });
   setSyncStatus(`Live sync connected to "${state.sync.workspaceId}". Last synced task: ${record.task}.`, "connected");
 }
@@ -2096,7 +2095,8 @@ async function confirmDeleteSelectedTask() {
     taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
     ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
     ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : "",
-    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : ""
+    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : "",
+    accessRole: state.currentWorkspace ? state.currentWorkspace.accessRole : ""
   });
   await deleteTaskFromWorkspace(record.id);
 }
