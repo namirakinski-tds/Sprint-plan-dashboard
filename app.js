@@ -384,7 +384,7 @@ function restoreWorkspaceFromCache(workspaceId) {
   state.source = parsed.source;
   state.fileName = parsed.fileName;
   state.records = fromWorkspaceTaskRows(cached.taskRows);
-  state.originalRecords = cloneRecords(state.records);
+  state.originalRecords = cloneRecords(getWorkspaceBaselineRecords(parsed, workspaceId));
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
   renderAll();
@@ -865,6 +865,10 @@ function namespaceParsedDataForWorkspace(parsed, workspaceId) {
   };
 }
 
+function getWorkspaceBaselineRecords(parsed, workspaceId) {
+  return namespaceParsedDataForWorkspace(parsed, workspaceId).records;
+}
+
 function createTaskDraft(record) {
   return {
     department: normalizeLabel(record.department),
@@ -1227,7 +1231,9 @@ function getTaskEditorName(record) {
 }
 
 function isAppAdded(record) {
-  return Boolean(record && String(record.id).startsWith("app-"));
+  if (!record) return false;
+  const recordId = String(record.id || "");
+  return recordId.startsWith("app-") || recordId.includes("::app-");
 }
 
 function isTaskDirty(record) {
@@ -1588,7 +1594,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   state.source = parsed.source;
   state.fileName = parsed.fileName;
   state.records = nextRecords;
-  state.originalRecords = cloneRecords(state.records);
+  state.originalRecords = cloneRecords(getWorkspaceBaselineRecords(parsed, workspaceId));
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
   await ensureWorkspaceMembership(workspaceId, (workspaceRow.owner_collaborator_id || workspaceRow.owner_client) === state.user.clientId ? "owner" : "collaborator");
@@ -2012,7 +2018,7 @@ function applyTaskChanges(record, changes) {
 
   if (changes.syncEndIfNeeded && record.end < record.start) record.end = record.start;
 
-  if (changes.workingDays) {
+  if (changes.useWorkingDays && changes.workingDays) {
     const start = normalizeBusinessDate(record.start, "forward") || record.start;
     record.start = start;
     record.end = addBusinessDays(start, changes.workingDays);
@@ -2028,6 +2034,11 @@ function applyTaskChanges(record, changes) {
 async function saveTaskDraft() {
   const draft = state.taskDraft;
   if (!draft) return;
+  const currentRecord = state.taskModalMode === "edit" ? getRecord(state.selectedTaskId) : null;
+  const currentWorkingDays = currentRecord && currentRecord.days ? currentRecord.days.length : 1;
+  const startChanged = Boolean(currentRecord && draft.start !== currentRecord.start);
+  const endChanged = Boolean(currentRecord && draft.end !== currentRecord.end);
+  const workingDaysChanged = Boolean(currentRecord && Math.max(1, Number(draft.workingDays) || 1) !== currentWorkingDays);
 
   const normalized = {
     task: String(draft.task || "").trim(),
@@ -2036,7 +2047,10 @@ async function saveTaskDraft() {
     assignee: normalizeLabel(draft.assignee),
     start: draft.start,
     end: draft.end,
-    workingDays: Math.max(1, Number(draft.workingDays) || 1)
+    workingDays: Math.max(1, Number(draft.workingDays) || 1),
+    useWorkingDays: state.taskModalMode === "create"
+      ? true
+      : workingDaysChanged && !startChanged && !endChanged
   };
 
   if (!normalized.task || !normalized.epic || !normalized.start) {

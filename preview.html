@@ -331,7 +331,7 @@
     border-radius: 14px;
     padding: 8px 10px;
     color: white;
-    overflow: hidden;
+    overflow: visible;
     box-shadow: 0 3px 8px rgba(15,23,42,.15);
     border: 1px solid rgba(255,255,255,.32);
     cursor: pointer;
@@ -396,6 +396,7 @@
     position: absolute;
     top: -10px;
     left: 10px;
+    z-index: 3;
     max-width: calc(100% - 20px);
     border-radius: 999px;
     padding: 4px 8px;
@@ -408,6 +409,7 @@
     overflow: hidden;
     text-overflow: ellipsis;
     box-shadow: 0 8px 16px rgba(15, 23, 42, 0.2);
+    pointer-events: none;
   }
   .task-title {
     font-size: 12px;
