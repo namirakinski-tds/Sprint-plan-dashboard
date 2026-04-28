@@ -95,6 +95,7 @@ const identityNameInput = document.getElementById("identityName");
 
 const userStorageKey = "planning-viewer-user";
 const workspaceStorageKey = "planning-viewer-workspace";
+const workspaceLastStorageKey = "planning-viewer-workspace-last";
 const workspaceQueryKey = "workspace";
 const workspaceCacheKey = "planning-viewer-workspace-cache";
 const defaultSyncConfig = {
@@ -141,6 +142,34 @@ function persistUserIdentity(name) {
   renderIdentity();
 }
 
+async function ensureCollaboratorRecord() {
+  if (!state.sync.client || !state.user.clientId || !state.user.name) return false;
+  const { error } = await state.sync.client
+    .from("planning_collaborators")
+    .upsert({
+      id: state.user.clientId,
+      username: state.user.name,
+      updated_at: new Date().toISOString(),
+      last_seen_at: new Date().toISOString()
+    });
+  return !error;
+}
+
+async function ensureWorkspaceMembership(workspaceId, role = "collaborator") {
+  if (!workspaceId || !state.sync.client || !state.user.clientId || !state.user.name) return false;
+  await ensureCollaboratorRecord();
+  const { error } = await state.sync.client
+    .from("planning_workspace_members")
+    .upsert({
+      workspace_id: workspaceId,
+      collaborator_id: state.user.clientId,
+      username_snapshot: state.user.name,
+      role,
+      last_seen_at: new Date().toISOString()
+    });
+  return !error;
+}
+
 async function logoutUser() {
   if (!window.confirm("Log out from this browser on this computer? Your username will be cleared until you enter it again.")) {
     return;
@@ -149,6 +178,7 @@ async function logoutUser() {
   if (!taskModal.hidden) await closeTaskModal();
   await clearLocalTaskPresence();
   localStorage.removeItem(userStorageKey);
+  localStorage.removeItem(workspaceLastStorageKey);
   sessionStorage.removeItem(workspaceStorageKey);
   updateWorkspaceLocation("");
   state.user.name = "";
@@ -177,7 +207,8 @@ function setCurrentWorkspaceMeta(workspace) {
     id: workspace.id,
     fileName: workspace.file_name || "",
     ownerName: workspace.owner_name || "",
-    ownerClient: workspace.owner_client || ""
+    ownerClient: workspace.owner_client || "",
+    ownerCollaboratorId: workspace.owner_collaborator_id || ""
   } : null;
   renderIdentity();
 }
@@ -185,9 +216,9 @@ function setCurrentWorkspaceMeta(workspace) {
 function isCurrentUserWorkspaceOwner() {
   return Boolean(
     state.currentWorkspace &&
-    state.currentWorkspace.ownerClient &&
+    (state.currentWorkspace.ownerCollaboratorId || state.currentWorkspace.ownerClient) &&
     state.user.clientId &&
-    state.currentWorkspace.ownerClient === state.user.clientId
+    (state.currentWorkspace.ownerCollaboratorId || state.currentWorkspace.ownerClient) === state.user.clientId
   );
 }
 
@@ -201,6 +232,7 @@ function openIdentityModal(forceFocus) {
 
 function persistWorkspaceSelection(workspaceId) {
   sessionStorage.setItem(workspaceStorageKey, workspaceId || "");
+  localStorage.setItem(workspaceLastStorageKey, workspaceId || "");
   updateWorkspaceLocation(workspaceId);
 }
 
@@ -216,7 +248,11 @@ function updateWorkspaceLocation(workspaceId) {
 
 function hydrateWorkspaceSelection() {
   const params = new URLSearchParams(window.location.search);
-  const stored = params.get(workspaceQueryKey) || sessionStorage.getItem(workspaceStorageKey);
+  const stored =
+    params.get(workspaceQueryKey) ||
+    sessionStorage.getItem(workspaceStorageKey) ||
+    localStorage.getItem(workspaceLastStorageKey) ||
+    getMostRecentCachedWorkspaceId();
   if (stored) {
     state.sync.workspaceId = stored.trim();
   }
@@ -236,6 +272,18 @@ function writeWorkspaceCacheMap(cacheMap) {
   localStorage.setItem(workspaceCacheKey, JSON.stringify(cacheMap));
 }
 
+function getMostRecentCachedWorkspaceId() {
+  const cacheMap = readWorkspaceCacheMap();
+  const entries = Object.values(cacheMap || {}).filter(entry => entry && entry.workspaceId);
+  if (!entries.length) return "";
+  entries.sort((a, b) => {
+    const aTime = a.cachedAt ? new Date(a.cachedAt).getTime() : 0;
+    const bTime = b.cachedAt ? new Date(b.cachedAt).getTime() : 0;
+    return bTime - aTime;
+  });
+  return entries[0].workspaceId || "";
+}
+
 function persistWorkspaceCache(workspaceId, payload) {
   if (!workspaceId || !payload || !payload.csvRows || !payload.taskRows) return;
   const cacheMap = readWorkspaceCacheMap();
@@ -246,6 +294,7 @@ function persistWorkspaceCache(workspaceId, payload) {
     taskRows: payload.taskRows,
     ownerName: payload.ownerName || "",
     ownerClient: payload.ownerClient || "",
+    ownerCollaboratorId: payload.ownerCollaboratorId || "",
     cachedAt: new Date().toISOString()
   };
   writeWorkspaceCacheMap(cacheMap);
@@ -273,7 +322,8 @@ function restoreWorkspaceFromCache(workspaceId) {
     id: workspaceId,
     file_name: cached.fileName,
     owner_name: cached.ownerName,
-    owner_client: cached.ownerClient
+    owner_client: cached.ownerClient,
+    owner_collaborator_id: cached.ownerCollaboratorId
   });
   state.source = parsed.source;
   state.fileName = parsed.fileName;
@@ -297,6 +347,7 @@ function renderWorkspaceList() {
       <div class="workspace-name">${escapeHtml(workspace.id)}</div>
       <div class="workspace-meta">${escapeHtml(workspace.file_name || "Shared planning board")}</div>
       <div class="workspace-meta">Owner ${escapeHtml(workspace.owner_name || "Unknown")}</div>
+      <div class="workspace-meta">${escapeHtml(workspace.access_role === "owner" ? "Owner access" : "Collaborator access")}</div>
       <div class="workspace-meta">Updated ${escapeHtml(new Date(workspace.updated_at).toLocaleString("en-GB"))}</div>
     </button>
   `).join("");
@@ -332,10 +383,43 @@ function closeWorkspaceModal() {
 }
 
 async function fetchAvailableWorkspaces() {
-  if (!state.sync.client) return [];
+  if (!state.sync.client || !state.user.clientId) return [];
+  await ensureCollaboratorRecord();
+
+  const { data: memberRows, error: memberError } = await state.sync.client
+    .from("planning_workspace_members")
+    .select("workspace_id, role, username_snapshot, last_seen_at")
+    .eq("collaborator_id", state.user.clientId);
+  if (memberError) {
+    setWorkspaceModalNote(`Could not load your workspace memberships: ${memberError.message}`, "error");
+    return [];
+  }
+
+  const { data: ownedRows, error: ownedError } = await state.sync.client
+    .from("planning_workspaces")
+    .select("id")
+    .eq("owner_client", state.user.clientId);
+  if (ownedError) {
+    setWorkspaceModalNote(`Could not load your owned workspaces: ${ownedError.message}`, "error");
+    return [];
+  }
+
+  const workspaceIds = Array.from(new Set([
+    ...(memberRows || []).map(row => row.workspace_id),
+    ...(ownedRows || []).map(row => row.id)
+  ])).filter(Boolean);
+
+  if (!workspaceIds.length) {
+    state.availableWorkspaces = [];
+    renderWorkspaceList();
+    return [];
+  }
+
+  const membershipByWorkspaceId = new Map((memberRows || []).map(row => [row.workspace_id, row]));
   const { data, error } = await state.sync.client
     .from("planning_workspaces")
-    .select("id, file_name, owner_name, owner_client, updated_at")
+    .select("id, file_name, owner_name, owner_client, owner_collaborator_id, updated_at")
+    .in("id", workspaceIds)
     .order("updated_at", { ascending: false });
 
   if (error) {
@@ -343,7 +427,13 @@ async function fetchAvailableWorkspaces() {
     return [];
   }
 
-  state.availableWorkspaces = data || [];
+  state.availableWorkspaces = (data || []).map(workspace => {
+    const membership = membershipByWorkspaceId.get(workspace.id);
+    return {
+      ...workspace,
+      access_role: workspace.owner_client === state.user.clientId ? "owner" : membership && membership.role ? membership.role : "collaborator"
+    };
+  });
   if (!state.selectedWorkspaceOption && state.availableWorkspaces[0]) {
     state.selectedWorkspaceOption = state.availableWorkspaces[0].id;
   }
@@ -355,6 +445,7 @@ async function activateWorkspace(workspaceId, options = {}) {
   const { loadExisting = true, notifyChanges = false, parsedData = null, owner = null } = options;
   if (!taskModal.hidden) await closeTaskModal();
   await clearLocalTaskPresence();
+  await ensureCollaboratorRecord();
   state.sync.workspaceId = workspaceId;
   state.selectedWorkspaceOption = workspaceId;
   persistWorkspaceSelection(workspaceId);
@@ -363,7 +454,8 @@ async function activateWorkspace(workspaceId, options = {}) {
       id: workspaceId,
       file_name: parsedData ? parsedData.fileName : "",
       owner_name: owner.owner_name || "",
-      owner_client: owner.owner_client || ""
+      owner_client: owner.owner_client || "",
+      owner_collaborator_id: owner.owner_collaborator_id || owner.owner_client || ""
     });
   }
   renderIdentity();
@@ -372,6 +464,7 @@ async function activateWorkspace(workspaceId, options = {}) {
   if (parsedData) {
     applyParsedData(parsedData);
     await publishCurrentBoard();
+    await ensureWorkspaceMembership(workspaceId, owner ? "owner" : "collaborator");
     setSyncStatus(`Workspace "${workspaceId}" is ready and linked to ${parsedData.fileName}.`, "connected");
   } else if (loadExisting) {
     await loadWorkspaceFromRemote(false, notifyChanges);
@@ -432,7 +525,8 @@ async function submitCreateWorkspace() {
   const namespaced = namespaceParsedDataForWorkspace(parsed, workspaceId);
   await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false, parsedData: namespaced, owner: {
     owner_name: state.user.name,
-    owner_client: state.user.clientId
+    owner_client: state.user.clientId,
+    owner_collaborator_id: state.user.clientId
   } });
   closeWorkspaceModal();
 }
@@ -445,13 +539,19 @@ function closeWorkspaceMenu() {
   if (workspaceMenu) workspaceMenu.open = false;
 }
 
-function saveIdentityFromInput() {
+async function saveIdentityFromInput() {
   const name = identityNameInput.value.trim();
   if (!name) {
     identityNameInput.focus();
     return;
   }
   persistUserIdentity(name);
+  if (state.sync.connected) {
+    await ensureCollaboratorRecord();
+    if (state.sync.workspaceId) {
+      await ensureWorkspaceMembership(state.sync.workspaceId, isCurrentUserWorkspaceOwner() ? "owner" : "collaborator");
+    }
+  }
   closeIdentityModal();
 }
 
@@ -1261,6 +1361,7 @@ async function publishCurrentBoard() {
       csv_rows: state.source.rows,
       owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
       owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
+      owner_collaborator_id: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId,
       last_published_by_name: state.user.name,
       last_published_by_client: state.user.clientId
     });
@@ -1291,14 +1392,16 @@ async function publishCurrentBoard() {
     id: workspaceId,
     file_name: state.fileName,
     owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
-    owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId
+    owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
+    owner_collaborator_id: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId
   });
   persistWorkspaceCache(workspaceId, {
     fileName: state.fileName,
     csvRows: state.source.rows,
     taskRows: toWorkspaceTaskRows(state.records, workspaceId),
     ownerName: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
-    ownerClient: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId
+    ownerClient: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
+    ownerCollaboratorId: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId
   });
   await fetchAvailableWorkspaces();
 }
@@ -1311,19 +1414,29 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
 
   const workspaceId = state.sync.workspaceId;
   const client = state.sync.client;
+  const hasCachedWorkspace = restoreWorkspaceFromCache(workspaceId);
 
   const { data: workspaceRow, error: workspaceError } = await client
     .from("planning_workspaces")
-    .select("id, file_name, csv_rows, owner_name, owner_client, last_published_by_name, last_published_by_client")
+    .select("id, file_name, csv_rows, owner_name, owner_client, owner_collaborator_id, last_published_by_name, last_published_by_client")
     .eq("id", workspaceId)
     .maybeSingle();
   if (workspaceError) {
+    if (hasCachedWorkspace) {
+      if (!silent) setSyncStatus(`Workspace "${workspaceId}" could not refresh from Supabase yet, so the cached board is still open.`, "dirty");
+      return;
+    }
     if (!silent) setSyncStatus(`Could not load workspace metadata: ${workspaceError.message}`, "dirty");
     return;
   }
   if (!workspaceRow) {
+    if (hasCachedWorkspace) {
+      if (!silent) setSyncStatus(`Workspace "${workspaceId}" is not available in Supabase right now, so the cached board is still open.`, "dirty");
+      return;
+    }
     state.sync.workspaceId = "";
     persistWorkspaceSelection("");
+    localStorage.removeItem(workspaceLastStorageKey);
     clearWorkspaceCache(workspaceId);
     await loadDefaultCsv();
     if (!silent) setSyncStatus(`Workspace "${workspaceId}" does not exist yet. Publish a board first.`, "dirty");
@@ -1335,12 +1448,20 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
     .select("id, workspace_id, row_index, department, epic, task, assignee, start_date, end_date, editing_by_name, editing_by_client, editing_started_at, updated_by_name, updated_by_client")
     .eq("workspace_id", workspaceId);
   if (taskError) {
+    if (hasCachedWorkspace) {
+      if (!silent) setSyncStatus(`Workspace "${workspaceId}" could not refresh tasks from Supabase yet, so the cached board is still open.`, "dirty");
+      return;
+    }
     if (!silent) setSyncStatus(`Could not load workspace tasks: ${taskError.message}`, "dirty");
     return;
   }
 
   const parsed = parseCsvRowsData(workspaceRow.csv_rows, workspaceRow.file_name);
   if (!parsed) {
+    if (hasCachedWorkspace) {
+      if (!silent) setSyncStatus(`Workspace "${workspaceId}" could not rebuild from Supabase yet, so the cached board is still open.`, "dirty");
+      return;
+    }
     if (!silent) setSyncStatus("The workspace metadata could not be parsed back into a CSV board.", "dirty");
     return;
   }
@@ -1357,12 +1478,14 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   state.originalRecords = cloneRecords(state.records);
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
+  await ensureWorkspaceMembership(workspaceId, workspaceRow.owner_client === state.user.clientId ? "owner" : "collaborator");
   persistWorkspaceCache(workspaceId, {
     fileName: parsed.fileName,
     csvRows: workspaceRow.csv_rows,
     taskRows: taskRows || [],
     ownerName: workspaceRow.owner_name || "",
-    ownerClient: workspaceRow.owner_client || ""
+    ownerClient: workspaceRow.owner_client || "",
+    ownerCollaboratorId: workspaceRow.owner_collaborator_id || ""
   });
   renderAll();
   changedTaskIds.forEach(flashRemoteTask);
@@ -1395,6 +1518,7 @@ async function deleteCurrentWorkspace() {
   }
 
   persistWorkspaceSelection("");
+  localStorage.removeItem(workspaceLastStorageKey);
   state.sync.workspaceId = "";
   state.selectedWorkspaceOption = "";
   clearWorkspaceCache(workspaceId);
@@ -1440,7 +1564,8 @@ async function persistTaskToWorkspace(record) {
     csvRows: state.source ? state.source.rows : [],
     taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
     ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
-    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : ""
+    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : "",
+    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : ""
   });
   setSyncStatus(`Live sync connected to "${state.sync.workspaceId}". Last synced task: ${record.task}.`, "connected");
 }
@@ -1845,7 +1970,8 @@ async function confirmDeleteSelectedTask() {
     csvRows: state.source ? state.source.rows : [],
     taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
     ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
-    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : ""
+    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : "",
+    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : ""
   });
   await deleteTaskFromWorkspace(record.id);
 }
@@ -2454,19 +2580,25 @@ async function init() {
   hydrateUserIdentity();
   hydrateWorkspaceSelection();
   bindEvents();
-  await connectSync();
   const preferredWorkspaceId = state.sync.workspaceId;
+  const restoredFromCache = preferredWorkspaceId ? restoreWorkspaceFromCache(preferredWorkspaceId) : false;
+  await connectSync();
   if (state.user.name && preferredWorkspaceId) {
-    const restoredFromCache = restoreWorkspaceFromCache(preferredWorkspaceId);
     await activateWorkspace(preferredWorkspaceId, { loadExisting: true, notifyChanges: false });
     await fetchAvailableWorkspaces();
     if (state.sync.workspaceId === preferredWorkspaceId && (state.records.length > 0 || restoredFromCache)) {
       return;
     }
   }
+  if (restoredFromCache && preferredWorkspaceId) {
+    setSyncStatus(`Workspace "${preferredWorkspaceId}" is open from local cache.`, "connected");
+    return;
+  }
   await fetchAvailableWorkspaces();
-  await loadDefaultCsv();
-  openWorkspaceModal();
+  if (!state.records.length) {
+    await loadDefaultCsv();
+    openWorkspaceModal();
+  }
 }
 
 init();
