@@ -52,7 +52,7 @@
     box-shadow: var(--shadow);
     border-radius: var(--radius);
   }
-  .toolbar { padding: 16px; }
+  .toolbar { padding: 12px; }
   .board-card { padding: 12px; overflow: hidden; }
   .view-panel { display: flex; flex-direction: column; gap: 12px; }
   .section-title { font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin-bottom: 10px; }
@@ -71,10 +71,10 @@
   .compact-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
   }
   .compact-toggle-label {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: .08em;
@@ -89,13 +89,14 @@
     gap: 4px;
   }
   .toggle-pills button {
-    min-height: 34px;
+    min-height: 30px;
     border: 0;
     border-radius: 999px;
-    padding: 8px 12px;
+    padding: 6px 10px;
     background: transparent;
     color: #4b5563;
     font-weight: 700;
+    font-size: 12px;
     cursor: pointer;
   }
   .toggle-pills button.active {
@@ -103,10 +104,14 @@
     color: #111827;
     box-shadow: 0 1px 3px rgba(0,0,0,.08);
   }
-  .field { margin-top: 16px; }
-  .field label { display: block; font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .toggle-pills button.compact-active {
+    background: #dbeafe;
+    color: #1d4ed8;
+  }
+  .field { margin-top: 14px; }
+  .field label { display: block; font-size: 12px; font-weight: 700; margin-bottom: 6px; }
   .menu-card {
-    margin-top: 16px;
+    width: 100%;
     border: 1px solid var(--line);
     border-radius: 16px;
     background: #fafafa;
@@ -120,7 +125,7 @@
     justify-content: space-between;
     gap: 12px;
     cursor: pointer;
-    padding: 14px 16px;
+    padding: 12px 14px;
   }
   .menu-card summary::-webkit-details-marker { display: none; }
   .menu-title {
@@ -146,24 +151,24 @@
     position: absolute;
     top: calc(100% + 10px);
     left: 0;
-    width: min(420px, calc(100vw - 48px));
+    width: min(400px, calc(100vw - 40px));
     max-height: min(70vh, 720px);
     overflow: auto;
     border: 1px solid var(--line);
     border-radius: 18px;
     background: white;
     box-shadow: 0 18px 42px rgba(15, 23, 42, 0.16);
-    padding: 0 16px 16px 16px;
+    padding: 0 14px 14px 14px;
     z-index: 85;
   }
   .menu-card[open] .menu-body { display: block; }
   .menu-body .field:first-child { margin-top: 16px; }
   .search, .upload, .editor-input {
     width: 100%;
-    min-height: 42px;
+    min-height: 38px;
     border: 1px solid var(--line);
     border-radius: 10px;
-    padding: 10px 12px;
+    padding: 8px 10px;
     outline: none;
     background: white;
     font: inherit;
@@ -182,6 +187,11 @@
   .toggle input { width: 18px; height: 18px; }
   .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
   .chip { font-size: 12px; font-weight: 700; border-radius: 999px; padding: 7px 10px; background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+  .holiday-chip {
+    background: #fef2f2;
+    color: #b91c1c;
+    border-color: #fecaca;
+  }
   .legend-note, .editor-help { color: var(--muted); font-size: 12px; line-height: 1.45; margin-top: 8px; }
   .status-banner {
     margin-top: 14px;
@@ -289,6 +299,10 @@
     text-align: center;
     height: var(--header-height);
   }
+  .day-head.holiday {
+    background: #fee2e2;
+    color: #991b1b;
+  }
   .day-num { font-size: 18px; font-weight: 800; line-height: 1; }
   .day-sub { font-size: 11px; color: var(--muted); margin-top: 4px; text-transform: uppercase; letter-spacing: .06em; }
   .board-row { display: flex; min-height: 74px; border-bottom: 1px solid var(--line); }
@@ -317,6 +331,14 @@
         var(--line) var(--day-width)
       );
   }
+  .holiday-column {
+    position: absolute;
+    top: 0;
+    background: rgba(239, 68, 68, 0.14);
+    border-left: 1px solid rgba(239, 68, 68, 0.18);
+    border-right: 1px solid rgba(239, 68, 68, 0.18);
+    pointer-events: none;
+  }
   .empty-row, .empty-state {
     color: var(--muted);
     display: flex;
@@ -340,11 +362,18 @@
     touch-action: none;
   }
   .task-bar:hover { transform: translateY(-1px); }
-  .task-bar.selected { outline: 3px solid rgba(17, 24, 39, 0.22); z-index: 3; }
+  .task-bar:hover,
+  .task-bar:focus-visible { z-index: 12; }
+  .task-bar.selected { outline: 3px solid rgba(17, 24, 39, 0.22); z-index: 13; }
   .task-bar.dirty { box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.85), 0 3px 8px rgba(15,23,42,.15); }
   .task-bar.locked { box-shadow: 0 0 0 2px rgba(17, 24, 39, 0.35), 0 3px 8px rgba(15,23,42,.15); }
   .task-bar.dragging { cursor: grabbing; transform: none; z-index: 8; }
   .task-bar.resizing-start, .task-bar.resizing-end { transform: none; z-index: 8; }
+  .task-bar:hover .task-hover-tip,
+  .task-bar:focus-visible .task-hover-tip {
+    opacity: 1;
+    transform: translateY(0);
+  }
   .task-bar.remote-flash {
     animation: remote-flash 1.8s ease;
     box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.9), 0 3px 8px rgba(15,23,42,.15);
@@ -410,6 +439,27 @@
     text-overflow: ellipsis;
     box-shadow: 0 8px 16px rgba(15, 23, 42, 0.2);
     pointer-events: none;
+  }
+  .task-hover-tip {
+    position: absolute;
+    left: 10px;
+    top: calc(100% + 8px);
+    z-index: 4;
+    width: max-content;
+    min-width: 220px;
+    max-width: min(360px, calc(100vw - 64px));
+    border-radius: 12px;
+    padding: 8px 10px;
+    background: rgba(15, 23, 42, 0.96);
+    color: white;
+    font-size: 12px;
+    line-height: 1.4;
+    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.28);
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity .08s ease, transform .08s ease;
+    pointer-events: none;
+    white-space: normal;
   }
   .task-title {
     font-size: 12px;
@@ -544,7 +594,7 @@
   }
   .toolbar-grid {
     display: grid;
-    grid-template-columns: 1.2fr 1.2fr minmax(260px, .9fr) minmax(260px, .9fr);
+    grid-template-columns: minmax(220px, .9fr) minmax(220px, 1fr) minmax(240px, 1fr) minmax(240px, 1fr);
     gap: 12px;
     align-items: start;
   }
@@ -552,13 +602,22 @@
     border: 1px solid var(--line);
     border-radius: 16px;
     background: #fafafa;
-    padding: 14px;
+    padding: 12px;
   }
   .toolbar-stack {
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 8px;
     align-items: center;
+  }
+  .toolbar-stack.column {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+  .toolbar-stack.column .compact-toggle {
+    width: 100%;
+    justify-content: space-between;
   }
   .status-strip {
     display: grid;
@@ -730,12 +789,26 @@
     <div class="toolbar">
       <div class="toolbar-grid">
         <div class="toolbar-section">
-          <div class="toolbar-stack">
+          <div class="toolbar-stack column">
             <div class="compact-toggle">
               <div class="compact-toggle-label">View</div>
               <div class="toggle-pills">
                 <button id="displayPlan" class="active">Plan</button>
                 <button id="displaySummary">Summary</button>
+              </div>
+            </div>
+            <div class="compact-toggle">
+              <div class="compact-toggle-label">Rows</div>
+              <div class="toggle-pills">
+                <button id="viewAssignee" class="active">Assignee</button>
+                <button id="viewEpic">Epic</button>
+              </div>
+            </div>
+            <div class="compact-toggle">
+              <div class="compact-toggle-label">Density</div>
+              <div class="toggle-pills">
+                <button id="densityCompact" class="active">Compact</button>
+                <button id="densityNormal">Extended</button>
               </div>
             </div>
           </div>
@@ -744,64 +817,69 @@
         <div class="toolbar-section">
           <div class="toolbar-stack">
             <div class="compact-toggle">
-              <div class="compact-toggle-label">Rows</div>
-              <div class="toggle-pills">
-                <button id="viewAssignee" class="active">Assignee</button>
-                <button id="viewEpic">Epic</button>
-              </div>
+              <div class="compact-toggle-label">Workspace holidays</div>
             </div>
+            <input id="holidayDateInput" class="search" type="date" />
+            <div id="holidayList" class="chips"></div>
           </div>
         </div>
 
-        <details class="menu-card" id="filtersMenu">
-          <summary>
-            <div>
-              <div class="menu-title">Filters</div>
-              <div class="menu-meta">Department, epic, assignee, and empty-row controls</div>
-            </div>
-            <div class="menu-chevron">⌄</div>
-          </summary>
-          <div class="menu-body">
-            <div class="field">
-              <label for="deptSearch">Department</label>
-              <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
-              <div class="row">
-                <button class="action light" id="deptAll">Select all</button>
-                <button class="action light" id="deptClear">Clear</button>
+        <div class="toolbar-section">
+          <details class="menu-card" id="filtersMenu">
+            <summary>
+              <div>
+                <div class="menu-title">Filters</div>
+                <div class="menu-meta">Text, department, epic, assignee, and empty-row controls</div>
               </div>
-              <div id="deptList" class="listbox"></div>
-            </div>
-
-            <div class="field">
-              <label for="epicSearch">Epic</label>
-              <input id="epicSearch" class="search" type="text" placeholder="Search epics..." />
-              <div class="row">
-                <button class="action light" id="epicAll">Select all</button>
-                <button class="action light" id="epicClear">Clear</button>
+              <div class="menu-chevron">⌄</div>
+            </summary>
+            <div class="menu-body">
+              <div class="field">
+                <label for="taskTextSearch">Task text</label>
+                <input id="taskTextSearch" class="search" type="text" placeholder="Type text like Board..." />
               </div>
-              <div id="epicList" class="listbox"></div>
-            </div>
 
-            <div class="field">
-              <label for="assigneeSearch">Assignee</label>
-              <input id="assigneeSearch" class="search" type="text" placeholder="Search assignees..." />
-              <div class="row">
-                <button class="action light" id="assigneeAll">Select all</button>
-                <button class="action light" id="assigneeClear">Clear</button>
+              <div class="field">
+                <label for="deptSearch">Department</label>
+                <input id="deptSearch" class="search" type="text" placeholder="Search departments..." />
+                <div class="row">
+                  <button class="action light" id="deptAll">Select all</button>
+                  <button class="action light" id="deptClear">Clear</button>
+                </div>
+                <div id="deptList" class="listbox"></div>
               </div>
-              <div id="assigneeList" class="listbox"></div>
-            </div>
 
-            <div class="field">
-              <div class="section-title">Display</div>
-              <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
-            </div>
+              <div class="field">
+                <label for="epicSearch">Epic</label>
+                <input id="epicSearch" class="search" type="text" placeholder="Type and press Enter to select first epic..." />
+                <div class="row">
+                  <button class="action light" id="epicAll">Select all</button>
+                  <button class="action light" id="epicClear">Clear</button>
+                </div>
+                <div id="epicList" class="listbox"></div>
+              </div>
 
-            <div class="row">
-              <button class="action light" id="resetFiltersBtn">Reset filters</button>
+              <div class="field">
+                <label for="assigneeSearch">Assignee</label>
+                <input id="assigneeSearch" class="search" type="text" placeholder="Type and press Enter to select first assignee..." />
+                <div class="row">
+                  <button class="action light" id="assigneeAll">Select all</button>
+                  <button class="action light" id="assigneeClear">Clear</button>
+                </div>
+                <div id="assigneeList" class="listbox"></div>
+              </div>
+
+              <div class="field">
+                <div class="section-title">Display</div>
+                <label class="toggle"><span>Hide empty rows</span><input id="toggleHideEmpty" type="checkbox" checked /></label>
+              </div>
+
+              <div class="row">
+                <button class="action light" id="resetFiltersBtn">Reset filters</button>
+              </div>
             </div>
-          </div>
-        </details>
+          </details>
+        </div>
 
         <div class="toolbar-section">
           <details class="workspace-menu" id="workspaceMenu">

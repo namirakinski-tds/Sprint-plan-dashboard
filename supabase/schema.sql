@@ -13,6 +13,7 @@ create table if not exists public.planning_workspaces (
   name text,
   file_name text not null,
   csv_rows jsonb not null,
+  holiday_dates jsonb not null default '[]'::jsonb,
   owner_name text,
   owner_client text,
   owner_collaborator_id text references public.planning_collaborators(id) on delete set null,
@@ -52,6 +53,7 @@ create table if not exists public.planning_tasks (
 
 alter table public.planning_workspaces
   add column if not exists name text,
+  add column if not exists holiday_dates jsonb not null default '[]'::jsonb,
   add column if not exists owner_name text,
   add column if not exists owner_client text,
   add column if not exists owner_collaborator_id text references public.planning_collaborators(id) on delete set null,

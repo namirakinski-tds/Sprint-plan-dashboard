@@ -10,6 +10,9 @@ const state = {
   selectedDepartments: new Set(),
   selectedEpics: new Set(),
   selectedAssignees: new Set(),
+  textFilter: "",
+  compactMode: true,
+  holidays: new Set(),
   hideEmpty: true,
   records: [],
   originalRecords: [],
@@ -67,6 +70,10 @@ const monthShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep
 const deptSearch = document.getElementById("deptSearch");
 const epicSearch = document.getElementById("epicSearch");
 const assigneeSearch = document.getElementById("assigneeSearch");
+const taskTextSearch = document.getElementById("taskTextSearch");
+const holidayDateInput = document.getElementById("holidayDateInput");
+const holidayList = document.getElementById("holidayList");
+const filtersMenu = document.getElementById("filtersMenu");
 const deptList = document.getElementById("deptList");
 const epicList = document.getElementById("epicList");
 const assigneeList = document.getElementById("assigneeList");
@@ -134,6 +141,16 @@ function getWorkspaceDisplayName(workspace) {
   return String(workspace.name || workspace.file_name || workspace.id || "").trim();
 }
 
+function getDayWidth() {
+  return state.compactMode ? 108 : 150;
+}
+
+function applyBoardDensity() {
+  const root = document.documentElement;
+  root.style.setProperty("--day-width", `${getDayWidth()}px`);
+  root.style.setProperty("--sticky-left", state.compactMode ? "232px" : "280px");
+}
+
 function normalizeLabel(value) {
   const trimmed = String(value == null ? "" : value).trim();
   return trimmed || "-";
@@ -161,6 +178,48 @@ function persistUserIdentity(name) {
     clientId: state.user.clientId
   }));
   renderIdentity();
+}
+
+function normalizeHolidayDates(values) {
+  if (!Array.isArray(values)) return [];
+  return Array.from(new Set(values
+    .map(value => normalizeBusinessDate(value, "forward") || String(value || "").trim())
+    .filter(Boolean))).sort();
+}
+
+async function persistWorkspaceHolidays() {
+  const workspaceId = state.sync.workspaceId || (state.currentWorkspace ? state.currentWorkspace.id : "");
+  if (!workspaceId || !state.sync.client || !state.sync.connected) return;
+  const holidayDates = normalizeHolidayDates(Array.from(state.holidays));
+  const { error } = await state.sync.client
+    .from("planning_workspaces")
+    .update({
+      holiday_dates: holidayDates,
+      last_published_by_name: state.user.name,
+      last_published_by_client: state.user.clientId
+    })
+    .eq("id", workspaceId);
+  if (error) {
+    setSyncStatus(`Could not save workspace holidays: ${error.message}`, "dirty");
+    return;
+  }
+
+  if (state.currentWorkspace) state.currentWorkspace.holidayDates = holidayDates;
+  persistWorkspaceCache(workspaceId, {
+    workspaceName: state.currentWorkspace ? getWorkspaceDisplayName(state.currentWorkspace) : workspaceId,
+    fileName: state.fileName,
+    csvRows: state.source ? state.source.rows : [],
+    taskRows: toWorkspaceTaskRows(state.records, workspaceId),
+    ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
+    ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : "",
+    ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : "",
+    accessRole: state.currentWorkspace ? state.currentWorkspace.accessRole : "",
+    holidayDates
+  });
+}
+
+function loadWorkspaceHolidaysFromData(values) {
+  state.holidays = new Set(normalizeHolidayDates(values));
 }
 
 async function ensureCollaboratorRecord() {
@@ -232,6 +291,7 @@ function setCurrentWorkspaceMeta(workspace) {
     id: workspace.id,
     name: workspace.name || "",
     fileName: workspace.file_name || "",
+    holidayDates: normalizeHolidayDates(workspace.holiday_dates || workspace.holidayDates || []),
     ownerName: workspace.owner_name || "",
     ownerClient: workspace.owner_client || "",
     ownerCollaboratorId: workspace.owner_collaborator_id || "",
@@ -332,6 +392,7 @@ function persistWorkspaceCache(workspaceId, payload) {
     fileName: payload.fileName || "planning-viewer.csv",
     csvRows: payload.csvRows,
     taskRows: payload.taskRows,
+    holidayDates: normalizeHolidayDates(payload.holidayDates || []),
     ownerName: payload.ownerName || "",
     ownerClient: payload.ownerClient || "",
     ownerCollaboratorId: payload.ownerCollaboratorId || "",
@@ -376,6 +437,7 @@ function restoreWorkspaceFromCache(workspaceId) {
     id: workspaceId,
     name: cached.workspaceName,
     file_name: cached.fileName,
+    holiday_dates: cached.holidayDates || [],
     owner_name: cached.ownerName,
     owner_client: cached.ownerClient,
     owner_collaborator_id: cached.ownerCollaboratorId,
@@ -384,6 +446,7 @@ function restoreWorkspaceFromCache(workspaceId) {
   state.source = parsed.source;
   state.fileName = parsed.fileName;
   state.records = fromWorkspaceTaskRows(cached.taskRows);
+  loadWorkspaceHolidaysFromData(cached.holidayDates || []);
   state.originalRecords = cloneRecords(getWorkspaceBaselineRecords(parsed, workspaceId));
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
@@ -466,7 +529,7 @@ async function fetchAvailableWorkspaces() {
   const membershipByWorkspaceId = new Map((memberRows || []).map(row => [row.workspace_id, row]));
   const { data, error } = await state.sync.client
     .from("planning_workspaces")
-    .select("id, name, file_name, owner_name, owner_client, owner_collaborator_id, updated_at")
+    .select("id, name, file_name, holiday_dates, owner_name, owner_client, owner_collaborator_id, updated_at")
     .order("updated_at", { ascending: false });
 
   if (error) {
@@ -524,6 +587,7 @@ async function activateWorkspace(workspaceId, options = {}) {
   state.sync.workspaceId = workspaceId;
   state.selectedWorkspaceOption = workspaceId;
   persistWorkspaceSelection(workspaceId);
+  loadWorkspaceHolidaysFromData(owner && owner.holiday_dates ? owner.holiday_dates : []);
   if (owner) {
     setCurrentWorkspaceMeta({
       id: workspaceId,
@@ -604,6 +668,7 @@ async function submitCreateWorkspace() {
     return;
   }
   persistUserIdentity(name);
+  state.holidays = new Set();
   const workspaceId = createWorkspaceId();
   const namespaced = namespaceParsedDataForWorkspace(parsed, workspaceId);
   await activateWorkspace(workspaceId, { loadExisting: false, notifyChanges: false, parsedData: namespaced, owner: {
@@ -888,7 +953,7 @@ function getDefaultTaskDraft() {
   const selectedEpic = state.selectedEpics.size === 1 ? [...state.selectedEpics][0] : "";
   const selectedAssignee = state.selectedAssignees.size === 1 ? [...state.selectedAssignees][0] : "";
   const department = selectedDepartment || getDepartments()[0] || "-";
-  const epic = selectedEpic || getEpics()[0] || "New epic";
+  const epic = selectedEpic || "Default epic";
   const assignee = selectedAssignee || getAssignees()[0] || "-";
   return {
     department,
@@ -1174,7 +1239,7 @@ function getDepartments() {
 }
 
 function getEpics() {
-  return Array.from(new Set(state.records.map(record => record.epic))).sort();
+  return Array.from(new Set(["Default epic", ...state.records.map(record => record.epic)])).sort();
 }
 
 function getAssignees() {
@@ -1199,6 +1264,10 @@ function getDateCols() {
     if (record.end > max) max = record.end;
   });
   return dateRangeBusiness(min, max);
+}
+
+function isHoliday(dateStr) {
+  return state.holidays.has(dateStr);
 }
 
 function getOriginalRecord(recordId) {
@@ -1456,6 +1525,7 @@ async function publishCurrentBoard() {
       name: state.currentWorkspace && state.currentWorkspace.name ? state.currentWorkspace.name : workspaceId,
       file_name: state.fileName,
       csv_rows: state.source.rows,
+      holiday_dates: normalizeHolidayDates(Array.from(state.holidays)),
       owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
       owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
       owner_collaborator_id: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId,
@@ -1492,6 +1562,7 @@ async function publishCurrentBoard() {
     id: workspaceId,
     name: state.currentWorkspace && state.currentWorkspace.name ? state.currentWorkspace.name : workspaceId,
     file_name: state.fileName,
+    holiday_dates: Array.from(state.holidays),
     owner_name: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
     owner_client: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
     owner_collaborator_id: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId
@@ -1501,6 +1572,7 @@ async function publishCurrentBoard() {
     fileName: state.fileName,
     csvRows: state.source.rows,
     taskRows: toWorkspaceTaskRows(state.records, workspaceId),
+    holidayDates: Array.from(state.holidays),
     ownerName: state.currentWorkspace && state.currentWorkspace.ownerName ? state.currentWorkspace.ownerName : state.user.name,
     ownerClient: state.currentWorkspace && state.currentWorkspace.ownerClient ? state.currentWorkspace.ownerClient : state.user.clientId,
     ownerCollaboratorId: state.currentWorkspace && state.currentWorkspace.ownerCollaboratorId ? state.currentWorkspace.ownerCollaboratorId : state.user.clientId,
@@ -1528,7 +1600,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
 
   const { data: workspaceRow, error: workspaceError } = await client
     .from("planning_workspaces")
-    .select("id, name, file_name, csv_rows, owner_name, owner_client, owner_collaborator_id, last_published_by_name, last_published_by_client")
+    .select("id, name, file_name, csv_rows, holiday_dates, owner_name, owner_client, owner_collaborator_id, last_published_by_name, last_published_by_client")
     .eq("id", workspaceId)
     .maybeSingle();
   if (workspaceError) {
@@ -1594,6 +1666,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
   state.source = parsed.source;
   state.fileName = parsed.fileName;
   state.records = nextRecords;
+  loadWorkspaceHolidaysFromData(workspaceRow.holiday_dates || []);
   state.originalRecords = cloneRecords(getWorkspaceBaselineRecords(parsed, workspaceId));
   if (state.selectedTaskId && !getRecord(state.selectedTaskId)) state.selectedTaskId = null;
   state.sync.applyingRemote = false;
@@ -1603,6 +1676,7 @@ async function loadWorkspaceFromRemote(silent, notifyChanges = true) {
     fileName: parsed.fileName,
     csvRows: workspaceRow.csv_rows,
     taskRows: taskRows || [],
+    holidayDates: workspaceRow.holiday_dates || [],
     ownerName: workspaceRow.owner_name || "",
     ownerClient: workspaceRow.owner_client || "",
     ownerCollaboratorId: workspaceRow.owner_collaborator_id || "",
@@ -1691,6 +1765,7 @@ async function persistTaskToWorkspace(record) {
     fileName: state.fileName,
     csvRows: state.source ? state.source.rows : [],
     taskRows: toWorkspaceTaskRows(state.records, state.sync.workspaceId),
+    holidayDates: Array.from(state.holidays),
     ownerName: state.currentWorkspace ? state.currentWorkspace.ownerName : "",
     ownerClient: state.currentWorkspace ? state.currentWorkspace.ownerClient : "",
     ownerCollaboratorId: state.currentWorkspace ? state.currentWorkspace.ownerCollaboratorId : "",
@@ -1737,6 +1812,35 @@ function addOptions(container, values, selectedSet, showColor) {
   });
 }
 
+function selectFirstMatchingValue(searchInput, values, selectedSet) {
+  const term = searchInput.value.trim().toLowerCase();
+  if (!term) return false;
+  const firstMatch = values.find(value => value.toLowerCase().includes(term));
+  if (!firstMatch) return false;
+  selectedSet.add(firstMatch);
+  searchInput.value = "";
+  renderAll();
+  return true;
+}
+
+function renderHolidayList() {
+  if (!holidayList) return;
+  const holidays = Array.from(state.holidays).sort();
+  holidayList.innerHTML = holidays.length
+    ? holidays.map(dateStr => `
+      <button class="chip holiday-chip" type="button" data-remove-holiday="${escapeHtml(dateStr)}">${escapeHtml(dateStr)} ×</button>
+    `).join("")
+    : '<div class="editor-help">No holidays marked yet.</div>';
+
+  holidayList.querySelectorAll("[data-remove-holiday]").forEach(button => {
+    button.addEventListener("click", async () => {
+      state.holidays.delete(button.dataset.removeHoliday || "");
+      await persistWorkspaceHolidays();
+      renderAll();
+    });
+  });
+}
+
 function renderOptions() {
   const dTerm = deptSearch.value.trim().toLowerCase();
   const eTerm = epicSearch.value.trim().toLowerCase();
@@ -1745,6 +1849,7 @@ function renderOptions() {
   addOptions(deptList, getDepartments().filter(value => value.toLowerCase().includes(dTerm)), state.selectedDepartments, true);
   addOptions(epicList, getEpics().filter(value => value.toLowerCase().includes(eTerm)), state.selectedEpics, false);
   addOptions(assigneeList, getAssignees().filter(value => value.toLowerCase().includes(aTerm)), state.selectedAssignees, false);
+  renderHolidayList();
 }
 
 function getFilteredRecords() {
@@ -1752,7 +1857,11 @@ function getFilteredRecords() {
     const deptOk = state.selectedDepartments.size === 0 || state.selectedDepartments.has(record.department);
     const epicOk = state.selectedEpics.size === 0 || state.selectedEpics.has(record.epic);
     const assigneeOk = state.selectedAssignees.size === 0 || state.selectedAssignees.has(record.assignee);
-    return deptOk && epicOk && assigneeOk;
+    const textTerm = state.textFilter.trim().toLowerCase();
+    const textOk = !textTerm || [record.task, record.epic, record.assignee, record.department].some(value =>
+      String(value || "").toLowerCase().includes(textTerm)
+    );
+    return deptOk && epicOk && assigneeOk && textOk;
   });
 }
 
@@ -1786,6 +1895,20 @@ function renderChips() {
     activeChips.appendChild(emptyChip);
   }
 
+  if (state.compactMode) {
+    const compactChip = document.createElement("span");
+    compactChip.className = "chip";
+    compactChip.textContent = "Density: Compact";
+    activeChips.appendChild(compactChip);
+  }
+
+  if (state.textFilter.trim()) {
+    const textChip = document.createElement("span");
+    textChip.className = "chip";
+    textChip.textContent = `Text: ${state.textFilter.trim()}`;
+    activeChips.appendChild(textChip);
+  }
+
   [...state.selectedDepartments].sort().forEach(value => {
     const chip = document.createElement("span");
     chip.className = "chip";
@@ -1807,6 +1930,13 @@ function renderChips() {
     activeChips.appendChild(chip);
   });
 
+  Array.from(state.holidays).sort().forEach(value => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = `Holiday: ${value}`;
+    activeChips.appendChild(chip);
+  });
+
   state.taskPresence.remoteByTaskId.forEach((presence, taskId) => {
     const record = getRecord(taskId);
     if (!record) return;
@@ -1824,6 +1954,14 @@ function dayHeader(dateStr) {
   const month = date.toLocaleDateString("en-GB", { month: "short" });
   const weekday = date.toLocaleDateString("en-GB", { weekday: "short" });
   return `<div class="day-num">${num}</div><div class="day-sub">${weekday} • ${month}</div>`;
+}
+
+function holidayColumnsHtml(dateCols, rowHeight) {
+  const dayWidth = getDayWidth();
+  return dateCols.map((dateStr, index) => {
+    if (!isHoliday(dateStr)) return "";
+    return `<div class="holiday-column" style="left:${index * dayWidth}px; width:${dayWidth}px; height:${rowHeight}px;"></div>`;
+  }).join("");
 }
 
 function buildRows(filtered, dateCols) {
@@ -1885,8 +2023,9 @@ function buildRows(filtered, dateCols) {
 }
 
 function taskBarHtml(task, colorMap) {
-  const left = task.startIdx * 150;
-  const width = ((task.endIdx - task.startIdx + 1) * 150) - 8;
+  const dayWidth = getDayWidth();
+  const left = task.startIdx * dayWidth;
+  const width = ((task.endIdx - task.startIdx + 1) * dayWidth) - 8;
   const top = 8 + (task.lane * 58);
   const color = colorMap[task.department] || "#64748b";
   const sub = state.rowMode === "assignee"
@@ -1904,8 +2043,9 @@ function taskBarHtml(task, colorMap) {
   const appAddedMark = isAppAdded(task) ? '<span class="task-app-mark">New</span>' : "";
   const presence = getPresenceForTask(task.id);
   const presenceHtml = presence ? `<div class="task-presence-pill">${escapeHtml(presence.name)} is editing</div>` : "";
+  const hoverTipHtml = `<div class="task-hover-tip">${escapeHtml(`${task.task} • ${sub}`)}</div>`;
 
-  return `<div class="${classes}" data-task-id="${escapeHtml(task.id)}" style="left:${left}px; width:${width}px; top:${top}px; background:${color};" title="${escapeHtml(`${task.task} | ${sub}`)}">${presenceHtml}<span class="resize-handle left" data-handle="start"></span><span class="resize-handle right" data-handle="end"></span>${dirtyMark}${appAddedMark}<div class="task-title">${escapeHtml(task.task)}</div><div class="task-sub">${sub}</div></div>`;
+  return `<div class="${classes}" data-task-id="${escapeHtml(task.id)}" style="left:${left}px; width:${width}px; top:${top}px; background:${color};">${presenceHtml}${hoverTipHtml}<span class="resize-handle left" data-handle="start"></span><span class="resize-handle right" data-handle="end"></span>${dirtyMark}${appAddedMark}<div class="task-title">${escapeHtml(task.task)}</div><div class="task-sub">${sub}</div></div>`;
 }
 
 function syncTaskBarVisual(record, element, mode) {
@@ -1913,8 +2053,9 @@ function syncTaskBarVisual(record, element, mode) {
   const startIdx = dateCols.indexOf(record.days[0]);
   const endIdx = dateCols.indexOf(record.days[record.days.length - 1]);
   if (startIdx < 0 || endIdx < 0) return;
-  element.style.left = `${startIdx * 150}px`;
-  element.style.width = `${((endIdx - startIdx + 1) * 150) - 8}px`;
+  const dayWidth = getDayWidth();
+  element.style.left = `${startIdx * dayWidth}px`;
+  element.style.width = `${((endIdx - startIdx + 1) * dayWidth) - 8}px`;
   element.classList.toggle("dragging", mode === "move");
   element.classList.toggle("resizing-start", mode === "resize-start");
   element.classList.toggle("resizing-end", mode === "resize-end");
@@ -2130,7 +2271,7 @@ function handleTaskPointerMove(event, element) {
   }
   dragState.moved = true;
 
-  const deltaDays = Math.round((event.clientX - dragState.startX) / 150);
+  const deltaDays = Math.round((event.clientX - dragState.startX) / getDayWidth());
   let nextStart = dragState.startDate;
   let nextEnd = dragState.endDate;
 
@@ -2242,6 +2383,7 @@ function renderBoard() {
   const filtered = getFilteredRecords();
   const dateCols = getDateCols();
   const colorMap = getColorMap();
+  const dayWidth = getDayWidth();
 
   updateStats(filtered);
   renderChips();
@@ -2259,16 +2401,17 @@ function renderBoard() {
   let html = '<div class="board-inner">';
   html += `<div class="header-row"><div class="header-left">${firstColTitle}</div><div class="header-days">`;
   dateCols.forEach(dateStr => {
-    html += `<div class="day-head">${dayHeader(dateStr)}</div>`;
+    html += `<div class="day-head ${isHoliday(dateStr) ? "holiday" : ""}">${dayHeader(dateStr)}</div>`;
   });
   html += "</div></div>";
 
   rows.forEach(row => {
     const rowHeight = Math.max(74, 8 + (row.laneCount * 58));
-    const timelineWidth = dateCols.length * 150;
+    const timelineWidth = dateCols.length * dayWidth;
     html += `<div class="board-row" data-row-name="${escapeHtml(row.name)}">`;
     html += `<div class="row-label"><div class="row-title">${escapeHtml(row.name)}</div><div class="row-sub">${escapeHtml(row.sub)}</div></div>`;
     html += `<div class="timeline" style="width:${timelineWidth}px; min-width:${timelineWidth}px; height:${rowHeight}px;">`;
+    html += holidayColumnsHtml(dateCols, rowHeight);
     if (row.placedTasks.length === 0) {
       html += '<div class="empty-row">·</div>';
     } else {
@@ -2356,16 +2499,16 @@ function getSelectModeValue(value, options) {
   return options.includes(value) ? value : "__new__";
 }
 
-function buildSelectOptions(options, selectedValue, placeholder) {
+function buildSelectOptions(options, selectedValue, placeholder, allowAddNew = true) {
   const unique = Array.from(new Set(options.filter(Boolean))).sort();
-  const selectedMode = getSelectModeValue(selectedValue, unique);
+  const selectedMode = allowAddNew ? getSelectModeValue(selectedValue, unique) : (unique.includes(selectedValue) ? selectedValue : "");
   const optionHtml = unique.map(option => `
     <option value="${escapeHtml(option)}" ${option === selectedMode ? "selected" : ""}>${escapeHtml(option)}</option>
   `).join("");
   return `
     <option value="">${escapeHtml(placeholder)}</option>
     ${optionHtml}
-    <option value="__new__" ${selectedMode === "__new__" ? "selected" : ""}>Add new…</option>
+    ${allowAddNew ? `<option value="__new__" ${selectedMode === "__new__" ? "selected" : ""}>Add new…</option>` : ""}
   `;
 }
 
@@ -2404,6 +2547,7 @@ function renderTaskModal(lockOwnerName = "") {
   const dirty = record ? isTaskDirty(record) : true;
   const locked = state.taskModalMode === "locked";
   const lockLabel = lockOwnerName || (record ? getTaskEditorName(record) : "A teammate");
+  const lastUpdatedBy = record && record.updatedByName ? record.updatedByName : "";
   taskModalContent.innerHTML = `
     <div class="section-title">Selected task</div>
     <div class="editor-head">
@@ -2431,9 +2575,8 @@ function renderTaskModal(lockOwnerName = "") {
       <div class="editor-field">
         <label for="editEpic">Epic</label>
         <select id="editEpic" class="editor-input" ${locked ? "disabled" : ""}>
-          ${buildSelectOptions(epics, draft.epic, "Choose epic")}
+          ${buildSelectOptions(epics, draft.epic, "Choose epic", false)}
         </select>
-        <input id="editEpicCustom" class="editor-input" type="text" placeholder="New epic" value="${escapeHtml(epics.includes(draft.epic) ? "" : draft.epic)}" ${locked ? "disabled" : ""} ${epics.includes(draft.epic) ? "hidden" : ""} />
       </div>
     </div>
     <div class="input-grid single">
@@ -2445,8 +2588,6 @@ function renderTaskModal(lockOwnerName = "") {
         </select>
       </div>
     </div>
-    <div class="editor-help">Draft: ${escapeHtml(draft.assignee)} • ${escapeHtml(draft.start)} to ${escapeHtml(draft.end)} (${draft.workingDays} working day${draft.workingDays === 1 ? "" : "s"})</div>
-    ${original ? `<div class="editor-help">Original: ${escapeHtml(original.assignee)} • ${escapeHtml(original.start)} to ${escapeHtml(original.end)} (${original.days.length} working day${original.days.length === 1 ? "" : "s"})</div>` : '<div class="editor-help">This task will be marked as added in the app after you save it.</div>'}
     <div class="input-grid">
       <div class="editor-field">
         <label for="editStart">Start date</label>
@@ -2467,6 +2608,9 @@ function renderTaskModal(lockOwnerName = "") {
         <div class="editor-help">Drag on the board to update dates and duration. Download the CSV when you are happy with the changes.</div>
       </div>
     </div>
+    <div class="editor-help">Draft: ${escapeHtml(draft.assignee)} • ${escapeHtml(draft.start)} to ${escapeHtml(draft.end)} (${draft.workingDays} working day${draft.workingDays === 1 ? "" : "s"})</div>
+    ${lastUpdatedBy ? `<div class="editor-help">Last changed by: ${escapeHtml(lastUpdatedBy)}</div>` : ""}
+    ${original ? `<div class="editor-help">Original: ${escapeHtml(original.assignee)} • ${escapeHtml(original.start)} to ${escapeHtml(original.end)} (${original.days.length} working day${original.days.length === 1 ? "" : "s"})</div>` : '<div class="editor-help">This task will be marked as added in the app after you save it.</div>'}
     <div class="editor-actions">
       ${record && !locked ? '<button class="action light" id="deleteTaskBtn">Delete task</button>' : ""}
       ${locked ? "" : '<button class="action dark" id="saveTaskBtn">Save</button>'}
@@ -2476,12 +2620,11 @@ function renderTaskModal(lockOwnerName = "") {
 
   if (!locked) {
     document.getElementById("editDepartment").addEventListener("change", () => toggleCustomField("editDepartment", "editDepartmentCustom"));
-    document.getElementById("editEpic").addEventListener("change", () => toggleCustomField("editEpic", "editEpicCustom"));
     document.getElementById("saveTaskBtn").addEventListener("click", () => {
       state.taskDraft = {
         task: document.getElementById("editTaskName").value.trim(),
         department: getDraftValueFromSelect("editDepartment", "editDepartmentCustom"),
-        epic: getDraftValueFromSelect("editEpic", "editEpicCustom"),
+        epic: document.getElementById("editEpic").value.trim() || "Default epic",
         assignee: document.getElementById("editAssignee").value.trim(),
         start: document.getElementById("editStart").value,
         end: document.getElementById("editEnd").value,
@@ -2525,7 +2668,9 @@ function resetFilters() {
   state.selectedDepartments.clear();
   state.selectedEpics.clear();
   state.selectedAssignees.clear();
+  state.textFilter = "";
   state.hideEmpty = true;
+  if (taskTextSearch) taskTextSearch.value = "";
   deptSearch.value = "";
   epicSearch.value = "";
   assigneeSearch.value = "";
@@ -2555,6 +2700,22 @@ function setDisplayMode(mode) {
   state.displayMode = mode;
   document.getElementById("displayPlan").classList.toggle("active", mode === "plan");
   document.getElementById("displaySummary").classList.toggle("active", mode === "summary");
+  renderAll();
+}
+
+function setCompactMode(compact) {
+  state.compactMode = Boolean(compact);
+  document.getElementById("densityNormal").classList.toggle("active", !state.compactMode);
+  document.getElementById("densityCompact").classList.toggle("active", state.compactMode);
+  applyBoardDensity();
+  renderAll();
+}
+
+async function addHoliday(dateStr) {
+  const normalized = normalizeBusinessDate(dateStr, "forward") || String(dateStr || "").trim();
+  if (!normalized) return;
+  state.holidays.add(normalized);
+  await persistWorkspaceHolidays();
   renderAll();
 }
 
@@ -2640,6 +2801,7 @@ async function loadDefaultCsv() {
   state.fileName = "planning-viewer.csv";
   state.records = [];
   state.originalRecords = [];
+  state.holidays = new Set();
   state.selectedTaskId = null;
   renderAll();
 }
@@ -2648,6 +2810,32 @@ function bindEvents() {
   deptSearch.addEventListener("input", renderOptions);
   epicSearch.addEventListener("input", renderOptions);
   assigneeSearch.addEventListener("input", renderOptions);
+  if (taskTextSearch) {
+    taskTextSearch.addEventListener("input", event => {
+      state.textFilter = event.target.value;
+      renderAll();
+    });
+  }
+
+  epicSearch.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      selectFirstMatchingValue(epicSearch, getEpics(), state.selectedEpics);
+    }
+  });
+  assigneeSearch.addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      selectFirstMatchingValue(assigneeSearch, getAssignees(), state.selectedAssignees);
+    }
+  });
+
+  if (holidayDateInput) {
+    holidayDateInput.addEventListener("change", async event => {
+      await addHoliday(event.target.value);
+      event.target.value = "";
+    });
+  }
 
   document.getElementById("deptAll").addEventListener("click", () => { getDepartments().forEach(value => state.selectedDepartments.add(value)); renderAll(); });
   document.getElementById("deptClear").addEventListener("click", () => { state.selectedDepartments.clear(); renderAll(); });
@@ -2665,6 +2853,8 @@ function bindEvents() {
   document.getElementById("displaySummary").addEventListener("click", () => setDisplayMode("summary"));
   document.getElementById("viewAssignee").addEventListener("click", () => setMode("assignee"));
   document.getElementById("viewEpic").addEventListener("click", () => setMode("epic"));
+  document.getElementById("densityNormal").addEventListener("click", () => setCompactMode(false));
+  document.getElementById("densityCompact").addEventListener("click", () => setCompactMode(true));
   document.getElementById("resetFiltersBtn").addEventListener("click", resetFilters);
   document.getElementById("undoChangesBtn").addEventListener("click", resetChanges);
   document.getElementById("downloadBtn").addEventListener("click", downloadCsv);
@@ -2709,6 +2899,15 @@ function bindEvents() {
   newWorkspaceNameInput.addEventListener("keydown", event => {
     if (event.key === "Enter") submitCreateWorkspace();
   });
+  document.addEventListener("pointerdown", event => {
+    const target = event.target;
+    if (filtersMenu && filtersMenu.open && !filtersMenu.contains(target)) {
+      filtersMenu.open = false;
+    }
+    if (workspaceMenu && workspaceMenu.open && !workspaceMenu.contains(target)) {
+      workspaceMenu.open = false;
+    }
+  });
   window.addEventListener("beforeunload", () => {
     clearLocalTaskPresence();
     if (state.selectedTaskId && state.taskModalMode === "edit") releaseTaskLock(state.selectedTaskId);
@@ -2718,6 +2917,7 @@ function bindEvents() {
 async function init() {
   hydrateUserIdentity();
   hydrateWorkspaceSelection();
+  applyBoardDensity();
   bindEvents();
   const preferredWorkspaceId = state.sync.workspaceId;
   const restoredFromCache = preferredWorkspaceId ? restoreWorkspaceFromCache(preferredWorkspaceId) : false;
